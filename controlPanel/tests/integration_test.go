@@ -47,6 +47,7 @@ func startApp(t *testing.T, dbPath string) *appInstance {
 		service.NewNodeService(repo),
 		service.NewHeartbeatService(repo),
 		service.NewReconciliationService(repo),
+		service.NewCommandService(sqlite.NewCommandRepository(repo.DB()), repo),
 		logger,
 	)
 	server := httptest.NewServer(router)

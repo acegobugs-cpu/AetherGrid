@@ -88,6 +88,36 @@ func (s *NodeService) Delete(ctx context.Context, id string) error {
 	return s.repo.Delete(ctx, id)
 }
 
+// UpdateStatus records agent-reported actual state for a node. It updates the
+// node's observed status and, when provided, its IP address, and refreshes the
+// heartbeat timestamp since a state report also proves liveness.
+func (s *NodeService) UpdateStatus(ctx context.Context, id string, status domain.NodeStatus, ipAddress string) (*domain.Node, error) {
+	if !status.Valid() {
+		return nil, &ValidationError{Message: fmt.Sprintf("invalid status %q", status)}
+	}
+
+	node, err := s.repo.GetByID(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+
+	now := time.Now().UTC()
+	node.Status = status
+	node.UpdatedAt = now
+	node.LastHeartbeat = &now
+	if ip := strings.TrimSpace(ipAddress); ip != "" {
+		if net.ParseIP(ip) == nil {
+			return nil, &ValidationError{Message: fmt.Sprintf("invalid ip_address %q", ip)}
+		}
+		node.IPAddress = ip
+	}
+
+	if err := s.repo.Update(ctx, node); err != nil {
+		return nil, err
+	}
+	return node, nil
+}
+
 // SetDesiredStatus updates the desired status of a node.
 func (s *NodeService) SetDesiredStatus(ctx context.Context, id string, status domain.NodeStatus) (*domain.Node, error) {
 	if !status.Valid() {

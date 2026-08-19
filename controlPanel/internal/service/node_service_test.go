@@ -146,6 +146,53 @@ func TestNodeServiceSetDesiredStatusNotFound(t *testing.T) {
 	}
 }
 
+func TestNodeServiceUpdateStatus(t *testing.T) {
+	svc := NewNodeService(newMockNodeRepository())
+
+	node, err := svc.Create(context.Background(), CreateNodeInput{Name: "edge-01", IPAddress: "10.0.0.10"})
+	if err != nil {
+		t.Fatalf("create failed: %v", err)
+	}
+
+	updated, err := svc.UpdateStatus(context.Background(), node.ID, domain.StatusReady, "10.0.0.20")
+	if err != nil {
+		t.Fatalf("update status failed: %v", err)
+	}
+	if updated.Status != domain.StatusReady {
+		t.Errorf("expected status READY, got %q", updated.Status)
+	}
+	if updated.IPAddress != "10.0.0.20" {
+		t.Errorf("expected ip 10.0.0.20, got %q", updated.IPAddress)
+	}
+	if updated.LastHeartbeat == nil {
+		t.Error("expected last_heartbeat to be refreshed by a state report")
+	}
+	if updated.DesiredStatus != domain.DesiredInitialStatus {
+		t.Errorf("state report must not change desired state, got %q", updated.DesiredStatus)
+	}
+
+	_, err = svc.UpdateStatus(context.Background(), node.ID, domain.NodeStatus("BOGUS"), "")
+	var validation *ValidationError
+	if !errors.As(err, &validation) {
+		t.Fatalf("expected ValidationError for bogus status, got %v", err)
+	}
+
+	_, err = svc.UpdateStatus(context.Background(), node.ID, domain.StatusReady, "not-an-ip")
+	var validationIP *ValidationError
+	if !errors.As(err, &validationIP) {
+		t.Fatalf("expected ValidationError for invalid ip, got %v", err)
+	}
+}
+
+func TestNodeServiceUpdateStatusNotFound(t *testing.T) {
+	svc := NewNodeService(newMockNodeRepository())
+
+	_, err := svc.UpdateStatus(context.Background(), "missing", domain.StatusReady, "")
+	if !IsNotFound(err) {
+		t.Fatalf("expected not found, got %v", err)
+	}
+}
+
 func TestValidateNewNode(t *testing.T) {
 	if err := ValidateNewNode(CreateNodeInput{Name: "edge-01", IPAddress: "10.0.0.1"}); err != nil {
 		t.Errorf("expected valid input, got %v", err)

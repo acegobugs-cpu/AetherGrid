@@ -47,8 +47,9 @@ func main() {
 	nodeService := service.NewNodeService(nodeRepo)
 	heartbeatService := service.NewHeartbeatService(nodeRepo)
 	reconciler := service.NewReconciliationService(nodeRepo)
+	commandService := service.NewCommandService(sqlite.NewCommandRepository(nodeRepo.DB()), nodeRepo)
 
-	router := apihandler.NewRouter(nodeService, heartbeatService, reconciler, logger)
+	router := apihandler.NewRouter(nodeService, heartbeatService, reconciler, commandService, logger)
 
 	server := &http.Server{
 		Addr:              cfg.ListenAddress(),

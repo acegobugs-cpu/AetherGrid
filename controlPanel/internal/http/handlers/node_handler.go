@@ -147,6 +147,40 @@ func (h *NodeHandler) State(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// SetState handles PUT /nodes/{id}/state. It is the endpoint edge agents use
+// to report their observed actual state.
+func (h *NodeHandler) SetState(w http.ResponseWriter, r *http.Request) {
+	id, ok := nodeID(w, r)
+	if !ok {
+		return
+	}
+
+	var request setStateRequest
+	if err := decodeJSON(w, r, &request); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	status := domain.NodeStatus(strings.TrimSpace(strings.ToUpper(request.Status)))
+	if !status.Valid() {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid status %q", request.Status))
+		return
+	}
+
+	node, err := h.nodes.UpdateStatus(r.Context(), id, status, request.IPAddress)
+	if err != nil {
+		h.writeServiceError(w, err, "recording node state")
+		return
+	}
+
+	h.logger.Printf("state reported: id=%s status=%s ip=%s", id, node.Status, node.IPAddress)
+	writeJSON(w, http.StatusOK, stateResponse{
+		NodeID:        node.ID,
+		Status:        string(node.Status),
+		LastHeartbeat: formatTime(node.LastHeartbeat),
+	})
+}
+
 // DesiredState handles GET /nodes/{id}/desired-state.
 func (h *NodeHandler) DesiredState(w http.ResponseWriter, r *http.Request) {
 	id, ok := nodeID(w, r)
@@ -283,6 +317,12 @@ type createNodeRequest struct {
 // setDesiredStateRequest is the JSON payload for PUT /nodes/{id}/desired-state.
 type setDesiredStateRequest struct {
 	Status string `json:"status"`
+}
+
+// setStateRequest is the JSON payload for PUT /nodes/{id}/state.
+type setStateRequest struct {
+	Status    string `json:"status"`
+	IPAddress string `json:"ip_address"`
 }
 
 // nodeResponse is the JSON representation of a node.

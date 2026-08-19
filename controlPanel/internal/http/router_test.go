@@ -44,6 +44,7 @@ func newTestApp(t *testing.T) *testApp {
 		service.NewNodeService(repo),
 		service.NewHeartbeatService(repo),
 		service.NewReconciliationService(repo),
+		service.NewCommandService(sqlite.NewCommandRepository(repo.DB()), repo),
 		logger,
 	)
 	server := httptest.NewServer(router)
@@ -448,5 +449,200 @@ func TestUnknownRoute(t *testing.T) {
 	resp, _ := app.request(t, http.MethodGet, "/unknown", nil)
 	if resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("expected 404, got %d", resp.StatusCode)
+	}
+}
+
+func TestSetState(t *testing.T) {
+	app := newTestApp(t)
+
+	id := createNode(t, app)
+
+	resp, body := app.request(t, http.MethodPut, "/nodes/"+id+"/state",
+		map[string]any{"status": "READY", "ip_address": "10.0.0.20"})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d (%v)", resp.StatusCode, body)
+	}
+	object := asMap(t, body)
+	if object["status"] != "READY" {
+		t.Errorf("expected status READY, got %v", object["status"])
+	}
+	if object["last_heartbeat"] == nil {
+		t.Error("expected last_heartbeat to be refreshed by a state report")
+	}
+
+	// The node's IP address must be updated too.
+	nodeResp, nodeBody := app.request(t, http.MethodGet, "/nodes/"+id, nil)
+	if nodeResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d (%v)", nodeResp.StatusCode, nodeBody)
+	}
+	if asMap(t, nodeBody)["ip_address"] != "10.0.0.20" {
+		t.Errorf("expected ip 10.0.0.20, got %v", asMap(t, nodeBody)["ip_address"])
+	}
+}
+
+func TestSetStateInvalidStatus(t *testing.T) {
+	app := newTestApp(t)
+
+	id := createNode(t, app)
+
+	resp, body := app.request(t, http.MethodPut, "/nodes/"+id+"/state",
+		map[string]any{"status": "BOGUS"})
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d (%v)", resp.StatusCode, body)
+	}
+}
+
+func TestSetStateNotFound(t *testing.T) {
+	app := newTestApp(t)
+
+	id := "f47ac10b-58cc-4372-a567-0e02b2c3d479"
+	resp, _ := app.request(t, http.MethodPut, "/nodes/"+id+"/state",
+		map[string]any{"status": "READY"})
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", resp.StatusCode)
+	}
+}
+
+func TestCreateCommand(t *testing.T) {
+	app := newTestApp(t)
+
+	id := createNode(t, app)
+
+	resp, body := app.request(t, http.MethodPost, "/nodes/"+id+"/commands",
+		map[string]any{"type": "GET_STATUS", "parameters": map[string]any{"detail": "full"}})
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("expected 201, got %d (%v)", resp.StatusCode, body)
+	}
+	object := asMap(t, body)
+	commandID, _ := object["id"].(string)
+	if commandID == "" {
+		t.Fatal("expected command id in response")
+	}
+	if object["type"] != "GET_STATUS" {
+		t.Errorf("expected type GET_STATUS, got %v", object["type"])
+	}
+	if object["status"] != "PENDING" {
+		t.Errorf("expected status PENDING, got %v", object["status"])
+	}
+}
+
+func TestCreateCommandMissingType(t *testing.T) {
+	app := newTestApp(t)
+
+	id := createNode(t, app)
+
+	resp, body := app.request(t, http.MethodPost, "/nodes/"+id+"/commands",
+		map[string]any{})
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d (%v)", resp.StatusCode, body)
+	}
+}
+
+func TestCreateCommandUnknownNode(t *testing.T) {
+	app := newTestApp(t)
+
+	id := "f47ac10b-58cc-4372-a567-0e02b2c3d479"
+	resp, _ := app.request(t, http.MethodPost, "/nodes/"+id+"/commands",
+		map[string]any{"type": "GET_STATUS"})
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", resp.StatusCode)
+	}
+}
+
+func TestListCommands(t *testing.T) {
+	app := newTestApp(t)
+
+	id := createNode(t, app)
+
+	created, body := app.request(t, http.MethodPost, "/nodes/"+id+"/commands",
+		map[string]any{"type": "GET_STATUS"})
+	if created.StatusCode != http.StatusCreated {
+		t.Fatalf("creating command failed: %d (%v)", created.StatusCode, body)
+	}
+	commandID := asMap(t, body)["id"].(string)
+
+	// A PENDING filter returns the command.
+	resp, body := app.request(t, http.MethodGet, "/nodes/"+id+"/commands?status=pending", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d (%v)", resp.StatusCode, body)
+	}
+	commands, ok := body.([]any)
+	if !ok {
+		t.Fatalf("expected array response, got %T", body)
+	}
+	if len(commands) != 1 {
+		t.Fatalf("expected 1 pending command, got %d", len(commands))
+	}
+
+	// Report a result, then verify it is no longer pending.
+	resultResp, resultBody := app.request(t, http.MethodPost,
+		"/nodes/"+id+"/commands/"+commandID+"/result",
+		map[string]any{"status": "SUCCEEDED", "result": map[string]any{"hostname": "edge-01"}})
+	if resultResp.StatusCode != http.StatusOK {
+		t.Fatalf("reporting result failed: %d (%v)", resultResp.StatusCode, resultBody)
+	}
+	if asMap(t, resultBody)["status"] != "SUCCEEDED" {
+		t.Errorf("expected status SUCCEEDED, got %v", asMap(t, resultBody)["status"])
+	}
+
+	resp, body = app.request(t, http.MethodGet, "/nodes/"+id+"/commands?status=pending", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d (%v)", resp.StatusCode, body)
+	}
+	commands = body.([]any)
+	if len(commands) != 0 {
+		t.Errorf("expected 0 pending commands, got %d", len(commands))
+	}
+}
+
+func TestListCommandsAllStatuses(t *testing.T) {
+	app := newTestApp(t)
+
+	id := createNode(t, app)
+
+	if resp, body := app.request(t, http.MethodPost, "/nodes/"+id+"/commands",
+		map[string]any{"type": "GET_STATUS"}); resp.StatusCode != http.StatusCreated {
+		t.Fatalf("creating command failed: %d (%v)", resp.StatusCode, body)
+	}
+
+	resp, body := app.request(t, http.MethodGet, "/nodes/"+id+"/commands", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d (%v)", resp.StatusCode, body)
+	}
+	if commands, ok := body.([]any); !ok || len(commands) != 1 {
+		t.Fatalf("expected 1 command without filter, got %v", body)
+	}
+}
+
+func TestReportCommandResultCrossNodeRejected(t *testing.T) {
+	app := newTestApp(t)
+
+	firstID := createNodeNamed(t, app, "edge-01")
+	secondID := createNodeNamed(t, app, "edge-02")
+
+	created, body := app.request(t, http.MethodPost, "/nodes/"+firstID+"/commands",
+		map[string]any{"type": "GET_STATUS"})
+	if created.StatusCode != http.StatusCreated {
+		t.Fatalf("creating command failed: %d (%v)", created.StatusCode, body)
+	}
+	commandID := asMap(t, body)["id"].(string)
+
+	// Reporting a result for edge-02's node path must be rejected.
+	resp, _ := app.request(t, http.MethodPost, "/nodes/"+secondID+"/commands/"+commandID+"/result",
+		map[string]any{"status": "SUCCEEDED"})
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected 404 for cross-node result, got %d", resp.StatusCode)
+	}
+}
+
+func TestReportCommandResultInvalidCommandID(t *testing.T) {
+	app := newTestApp(t)
+
+	id := createNode(t, app)
+
+	resp, _ := app.request(t, http.MethodPost, "/nodes/"+id+"/commands/not-a-uuid/result",
+		map[string]any{"status": "SUCCEEDED"})
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", resp.StatusCode)
 	}
 }
