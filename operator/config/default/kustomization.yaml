@@ -1,0 +1,7 @@
+resources:
+  - namespace.yaml
+  - ../crd
+  - ../rbac
+  - ../manager
+
+namespace: aether-grid-system

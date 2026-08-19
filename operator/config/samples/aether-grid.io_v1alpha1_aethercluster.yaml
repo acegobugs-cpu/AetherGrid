@@ -1,0 +1,8 @@
+apiVersion: aether-grid.io/v1alpha1
+kind: AetherCluster
+metadata:
+  name: example
+spec:
+  replicas: 2
+  image: nginx:stable
+  port: 80
