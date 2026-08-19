@@ -17,6 +17,7 @@ import (
 	"time"
 
 	apihandler "github.com/acegobugs-cpu/AetherGrid/internal/http"
+	"github.com/acegobugs-cpu/AetherGrid/internal/provisioning"
 	"github.com/acegobugs-cpu/AetherGrid/internal/reconcile"
 	"github.com/acegobugs-cpu/AetherGrid/internal/repository/sqlite"
 	"github.com/acegobugs-cpu/AetherGrid/internal/service"
@@ -55,7 +56,16 @@ func startReconciliationApp(t *testing.T, cfg reconcile.Config) *reconciliationA
 	nodeService.SetReconcileNotifier(reconciler.Notify)
 	heartbeatService.SetReconcileNotifier(reconciler.Notify)
 
-	router := apihandler.NewRouter(nodeService, heartbeatService, reconciler, commandService, logger)
+	infraRepo := sqlite.NewInfrastructureRepository(repo.DB())
+	infrastructureService := service.NewInfrastructureService(
+		infraRepo,
+		infraRepo,
+		&stubProvisioner{},
+		&provisioning.Metrics{},
+		logger,
+	)
+
+	router := apihandler.NewRouter(nodeService, heartbeatService, reconciler, commandService, infrastructureService, logger)
 	server := httptest.NewServer(router)
 
 	reconciler.Start()

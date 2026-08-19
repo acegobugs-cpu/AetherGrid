@@ -100,8 +100,27 @@ func applyMigration(ctx context.Context, db *sql.DB, name, content string) error
 }
 
 // splitStatements splits a migration file into individual SQL statements,
-// ignoring comments and empty segments.
+// ignoring comments and empty segments.  We must be careful to not split on
+// semicolons that appear inside comment lines (e.g. "Terraform;" in a comment),
+// so we first remove inline semicolons from comment lines before splitting.
 func splitStatements(content string) []string {
+	// Remove semicolons that appear inside comment lines only.
+	// A comment line is a line whose trimmed content starts with "--".
+	cleaned := make([]byte, 0, len(content))
+	lines := strings.Split(content, "\n")
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "--") && strings.Contains(trimmed, ";") {
+			// Remove all semicolons from this comment line.
+			line = strings.ReplaceAll(line, ";", "")
+		}
+		cleaned = append(cleaned, []byte(line)...)
+		if i < len(lines)-1 {
+			cleaned = append(cleaned, '\n')
+		}
+	}
+	content = string(cleaned)
+
 	var statements []string
 	for _, raw := range strings.Split(content, ";") {
 		statement := strings.TrimSpace(strings.TrimSuffix(raw, ";"))

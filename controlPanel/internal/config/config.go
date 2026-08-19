@@ -19,6 +19,12 @@ type Config struct {
 	ReconciliationMaxRetries      int
 	ReconciliationMaxBackoff      time.Duration
 	ReconciliationRecoveryTimeout time.Duration
+
+	// Infrastructure provisioning.
+	TerraformBin      string
+	TerraformWorkDir  string
+	TerraformModuleDir string
+	TerraformTimeout  time.Duration
 }
 
 // Defaults used when the corresponding environment variable is not set.
@@ -33,6 +39,11 @@ const (
 	defaultReconciliationMaxRetries      = 3
 	defaultReconciliationMaxBackoff      = 10 * time.Second
 	defaultReconciliationRecoveryTimeout = 60 * time.Second
+
+	defaultTerraformBin      = "terraform"
+	defaultTerraformWorkDir  = "./data/terraform"
+	defaultTerraformModuleDir = "./terraform/modules/edge-node"
+	defaultTerraformTimeout  = 5 * time.Minute
 )
 
 // ListenAddress returns the host:port address the HTTP server should bind to.
@@ -54,6 +65,11 @@ func FromEnv() Config {
 		ReconciliationMaxRetries:      envIntOr("RECONCILIATION_MAX_RETRIES", defaultReconciliationMaxRetries),
 		ReconciliationMaxBackoff:      envDurationOr("RECONCILIATION_MAX_BACKOFF", defaultReconciliationMaxBackoff),
 		ReconciliationRecoveryTimeout: envDurationOr("RECONCILIATION_RECOVERY_TIMEOUT", defaultReconciliationRecoveryTimeout),
+
+		TerraformBin:       envOr("TERRAFORM_BIN", defaultTerraformBin),
+		TerraformWorkDir:   envOr("TERRAFORM_WORK_DIR", defaultTerraformWorkDir),
+		TerraformModuleDir: envOr("TERRAFORM_MODULE_DIR", defaultTerraformModuleDir),
+		TerraformTimeout:   envDurationOr("TERRAFORM_TIMEOUT", defaultTerraformTimeout),
 	}
 }
 

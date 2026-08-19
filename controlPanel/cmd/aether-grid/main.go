@@ -14,6 +14,8 @@ import (
 
 	"github.com/acegobugs-cpu/AetherGrid/internal/config"
 	apihandler "github.com/acegobugs-cpu/AetherGrid/internal/http"
+	"github.com/acegobugs-cpu/AetherGrid/internal/provisioning"
+	"github.com/acegobugs-cpu/AetherGrid/internal/provisioning/terraform"
 	"github.com/acegobugs-cpu/AetherGrid/internal/reconcile"
 	"github.com/acegobugs-cpu/AetherGrid/internal/repository/sqlite"
 	"github.com/acegobugs-cpu/AetherGrid/internal/service"
@@ -56,10 +58,32 @@ func main() {
 		logger,
 	)
 
+	infraRepo := sqlite.NewInfrastructureRepository(nodeRepo.DB())
+	provisioner := terraform.NewProvisioner(
+		cfg.TerraformBin,
+		cfg.TerraformWorkDir,
+		cfg.TerraformModuleDir,
+		cfg.TerraformTimeout,
+		logger,
+	)
+	infrastructureService := service.NewInfrastructureService(
+		infraRepo,
+		infraRepo,
+		provisioner,
+		&provisioning.Metrics{},
+		logger,
+	)
+
 	nodeService.SetReconcileNotifier(reconciler.Notify)
 	heartbeatService.SetReconcileNotifier(reconciler.Notify)
 
-	router := apihandler.NewRouter(nodeService, heartbeatService, reconciler, commandService, logger)
+	router := apihandler.NewRouter(nodeService, heartbeatService, reconciler, commandService, infrastructureService, logger)
+
+	if err := infrastructureService.Recover(ctx); err != nil {
+		logger.Fatalf("recovering infrastructure state: %v", err)
+	}
+	logger.Printf("infrastructure provisioning ready (bin=%s workdir=%s module=%s)",
+		cfg.TerraformBin, cfg.TerraformWorkDir, cfg.TerraformModuleDir)
 
 	server := &http.Server{
 		Addr:              cfg.ListenAddress(),

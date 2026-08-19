@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -16,6 +17,8 @@ import (
 	"time"
 
 	apihandler "github.com/acegobugs-cpu/AetherGrid/internal/http"
+	"github.com/acegobugs-cpu/AetherGrid/internal/domain"
+	"github.com/acegobugs-cpu/AetherGrid/internal/provisioning"
 	"github.com/acegobugs-cpu/AetherGrid/internal/reconcile"
 	"github.com/acegobugs-cpu/AetherGrid/internal/repository/sqlite"
 	"github.com/acegobugs-cpu/AetherGrid/internal/service"
@@ -41,6 +44,35 @@ type appInstance struct {
 	dbPath string
 }
 
+// stubProvisioner is a no-op Provisioner used by the integration tests so the
+// infrastructure endpoints can be exercised without invoking Terraform.
+type stubProvisioner struct{}
+
+func (stubProvisioner) Plan(ctx context.Context, infra *domain.Infrastructure) (*provisioning.PlanResult, error) {
+	return &provisioning.PlanResult{Changes: domain.ChangeSummary{ToCreate: infra.Spec.NodeCount}}, nil
+}
+
+func (stubProvisioner) Apply(ctx context.Context, infra *domain.Infrastructure) (*provisioning.ApplyResult, error) {
+	nodes := make([]domain.InfrastructureNode, infra.Spec.NodeCount)
+	for i := 0; i < infra.Spec.NodeCount; i++ {
+		nodes[i] = domain.InfrastructureNode{
+			ID:    fmt.Sprintf("%s-%d", infra.Spec.Name, i+1),
+			Name:  fmt.Sprintf("%s-%d", infra.Spec.Name, i+1),
+			IP:    fmt.Sprintf("10.0.0.%d", i+1),
+			State: "running",
+		}
+	}
+	return &provisioning.ApplyResult{Changes: domain.ChangeSummary{ToCreate: infra.Spec.NodeCount}, Nodes: nodes}, nil
+}
+
+func (stubProvisioner) Destroy(ctx context.Context, infra *domain.Infrastructure) error {
+	return nil
+}
+
+func (stubProvisioner) Status(ctx context.Context, infra *domain.Infrastructure) (*domain.InfrastructureStatus, error) {
+	return &domain.InfrastructureStatus{Phase: domain.InfraPhasePending}, nil
+}
+
 // startApp boots a control plane instance on the given database path.
 func startApp(t *testing.T, dbPath string) *appInstance {
 	t.Helper()
@@ -58,11 +90,20 @@ func startApp(t *testing.T, dbPath string) *appInstance {
 	commandService := service.NewCommandService(sqlite.NewCommandRepository(repo.DB()), repo)
 	reconciler := service.NewReconciliationService(testReconcileConfig, repo,
 		sqlite.NewReconciliationRepository(repo.DB()), commandService, logger)
+	infraRepo := sqlite.NewInfrastructureRepository(repo.DB())
+	infrastructureService := service.NewInfrastructureService(
+		infraRepo,
+		infraRepo,
+		&stubProvisioner{},
+		&provisioning.Metrics{},
+		logger,
+	)
 	router := apihandler.NewRouter(
 		service.NewNodeService(repo),
 		service.NewHeartbeatService(repo),
 		reconciler,
 		commandService,
+		infrastructureService,
 		logger,
 	)
 	server := httptest.NewServer(router)
