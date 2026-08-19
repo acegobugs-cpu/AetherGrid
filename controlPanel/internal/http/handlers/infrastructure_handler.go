@@ -119,6 +119,23 @@ func (h *InfrastructureHandler) StartDestroy(w http.ResponseWriter, r *http.Requ
 	h.startOperation(w, r, domain.OperationDestroy)
 }
 
+// StartBootstrap handles POST /infrastructure/{id}/bootstrap.
+func (h *InfrastructureHandler) StartBootstrap(w http.ResponseWriter, r *http.Request) {
+	id, ok := infrastructureID(w, r)
+	if !ok {
+		return
+	}
+
+	op, err := h.infrastructures.StartOperation(r.Context(), id, domain.OperationBootstrap)
+	if err != nil {
+		h.writeServiceError(w, err, "starting bootstrap operation")
+		return
+	}
+
+	h.logger.Printf("bootstrap operation started: id=%s infra=%s type=%s", op.ID, op.InfrastructureID, op.Type)
+	writeJSON(w, http.StatusAccepted, newOperationResponse(op))
+}
+
 // ListOperations handles GET /infrastructure/{id}/operations.
 func (h *InfrastructureHandler) ListOperations(w http.ResponseWriter, r *http.Request) {
 	id, ok := infrastructureID(w, r)

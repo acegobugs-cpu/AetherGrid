@@ -285,6 +285,18 @@ func (s *InfrastructureService) runOperation(ctx context.Context, op *domain.Inf
 		} else {
 			infra.Status.Nodes = nil
 		}
+	case domain.OperationBootstrap:
+		// Bootstrap is not a Terraform operation; it is a node networking &
+		// agent installation process. Mark the infrastructure as bootstrapping
+		// and record the operation so it can be tracked and resumed.
+		infra.Status.BootstrapState = domain.BootstrapPhasePending
+		infra.UpdatedAt = time.Now().UTC()
+		if err := s.infraRepo.Update(ctx, infra); err != nil && s.logger != nil {
+			s.logger.Printf("updating infrastructure %s bootstrap phase: %v", infra.ID, err)
+		}
+		// Note: actual bootstrap execution (SSH, WireGuard, agent install)
+		// would be triggered by the bootstrap API and is out of scope for the
+		// provisioner layer.
 	}
 
 	completed := time.Now().UTC()

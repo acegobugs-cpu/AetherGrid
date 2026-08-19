@@ -122,20 +122,78 @@ type InfrastructureNode struct {
 
 // InfrastructureStatus is the observed state of an infrastructure deployment.
 type InfrastructureStatus struct {
-	Phase        InfrastructurePhase
-	Nodes        []InfrastructureNode
-	LastOperation string
-	Error        string
+	Phase           InfrastructurePhase
+	Nodes           []InfrastructureNode
+	LastOperation   string
+	Error           string
+	BootstrapState  BootstrapPhase
 }
 
 // Infrastructure is the aggregate root for a declarative infrastructure
 // deployment.
 type Infrastructure struct {
-	ID        string
-	Spec      InfrastructureSpec
-	Status    InfrastructureStatus
-	CreatedAt time.Time
-	UpdatedAt time.Time
+	ID                string
+	Spec              InfrastructureSpec
+	Status            InfrastructureStatus
+	CreatedAt         time.Time
+	UpdatedAt         time.Time
+	BootstrapState    BootstrapPhase
+	BootstrapToken    string
+	WireGuardPublicKey string
+	PrivateNetworkIP  string
+}
+
+// BootstrapPhase is the lifecycle phase of a node bootstrap operation.
+//
+//	Pending ──► Connecting ──► Preparing ──► Networking
+//	            │            │            │
+//	            │            │            ├── InstallingAgent
+//	            │            │            │
+//	            │            │            └── Registering
+//	            │            │
+//	            │            └── Failed
+//	            │
+//	            └── Ready
+type BootstrapPhase string
+
+// Bootstrap lifecycle phases.
+const (
+	BootstrapPhasePending      BootstrapPhase = "PENDING"
+	BootstrapPhaseConnecting   BootstrapPhase = "CONNECTING"
+	BootstrapPhasePreparing    BootstrapPhase = "PREPARING"
+	BootstrapPhaseNetworking   BootstrapPhase = "NETWORKING"
+	BootstrapPhaseInstalling   BootstrapPhase = "INSTALLING"
+	BootstrapPhaseRegistering  BootstrapPhase = "REGISTERING"
+	BootstrapPhaseReady        BootstrapPhase = "READY"
+	BootstrapPhaseFailed       BootstrapPhase = "FAILED"
+)
+
+// allBootstrapPhases is the canonical set of valid bootstrap phases.
+var allBootstrapPhases = []BootstrapPhase{
+	BootstrapPhasePending,
+	BootstrapPhaseConnecting,
+	BootstrapPhasePreparing,
+	BootstrapPhaseNetworking,
+	BootstrapPhaseInstalling,
+	BootstrapPhaseRegistering,
+	BootstrapPhaseReady,
+	BootstrapPhaseFailed,
+}
+
+// Valid reports whether p is a known bootstrap phase.
+func (p BootstrapPhase) Valid() bool {
+	for _, candidate := range allBootstrapPhases {
+		if p == candidate {
+			return true
+		}
+	}
+	return false
+}
+
+// Terminal reports whether the phase is a final state. Bootstrap in a
+// terminal phase is not executing an operation.
+func (p BootstrapPhase) Terminal() bool {
+	return p == BootstrapPhaseReady || p == BootstrapPhaseFailed
 }
 
 // OperationType identifies the kind of provisioning operation.
@@ -146,11 +204,12 @@ const (
 	OperationPlan    OperationType = "PLAN"
 	OperationApply   OperationType = "APPLY"
 	OperationDestroy OperationType = "DESTROY"
+	OperationBootstrap OperationType = "BOOTSTRAP"
 )
 
 // Valid reports whether t is a known operation type.
 func (t OperationType) Valid() bool {
-	return t == OperationPlan || t == OperationApply || t == OperationDestroy
+	return t == OperationPlan || t == OperationApply || t == OperationDestroy || t == OperationBootstrap
 }
 
 // OperationStatus is the lifecycle status of a provisioning operation.

@@ -60,6 +60,7 @@ func NewRouter(
 	mux.HandleFunc("POST /infrastructure/{id}/plan", infrastructureHandler.StartPlan)
 	mux.HandleFunc("POST /infrastructure/{id}/apply", infrastructureHandler.StartApply)
 	mux.HandleFunc("POST /infrastructure/{id}/destroy", infrastructureHandler.StartDestroy)
+	mux.HandleFunc("POST /infrastructure/{id}/bootstrap", infrastructureHandler.StartBootstrap)
 	mux.HandleFunc("GET /infrastructure/metrics", infrastructureHandler.Metrics)
 
 	mux.HandleFunc("GET /operations/{id}", infrastructureHandler.GetOperation)
