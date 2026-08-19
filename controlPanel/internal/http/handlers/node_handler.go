@@ -18,12 +18,11 @@ import (
 	"github.com/google/uuid"
 )
 
-// NodeHandler exposes the node lifecycle, heartbeat, state and reconciliation
+// NodeHandler exposes the node lifecycle, heartbeat, state and desired-state
 // endpoints over HTTP.
 type NodeHandler struct {
 	nodes      *service.NodeService
 	heartbeats *service.HeartbeatService
-	reconciler *service.ReconciliationService
 	logger     *log.Logger
 }
 
@@ -31,13 +30,11 @@ type NodeHandler struct {
 func NewNodeHandler(
 	nodes *service.NodeService,
 	heartbeats *service.HeartbeatService,
-	reconciler *service.ReconciliationService,
 	logger *log.Logger,
 ) *NodeHandler {
 	return &NodeHandler{
 		nodes:      nodes,
 		heartbeats: heartbeats,
-		reconciler: reconciler,
 		logger:     logger,
 	}
 }
@@ -196,6 +193,7 @@ func (h *NodeHandler) DesiredState(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, desiredStateResponse{
 		NodeID:        node.ID,
 		DesiredStatus: string(node.DesiredStatus),
+		DesiredState:  node.DesiredState(),
 	})
 }
 
@@ -228,25 +226,8 @@ func (h *NodeHandler) SetDesiredState(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, desiredStateResponse{
 		NodeID:        node.ID,
 		DesiredStatus: string(node.DesiredStatus),
+		DesiredState:  node.DesiredState(),
 	})
-}
-
-// Reconcile handles POST /nodes/{id}/reconcile.
-func (h *NodeHandler) Reconcile(w http.ResponseWriter, r *http.Request) {
-	id, ok := nodeID(w, r)
-	if !ok {
-		return
-	}
-
-	result, err := h.reconciler.Reconcile(r.Context(), id)
-	if err != nil {
-		h.writeServiceError(w, err, "reconciling node")
-		return
-	}
-
-	h.logger.Printf("reconciliation: id=%s desired=%s actual=%s result=%s",
-		id, result.DesiredState, result.ActualState, result.Result)
-	writeJSON(w, http.StatusOK, result)
 }
 
 // writeServiceError maps service/repository errors to consistent HTTP
@@ -365,6 +346,7 @@ type stateResponse struct {
 
 // desiredStateResponse is the JSON representation of a node's desired state.
 type desiredStateResponse struct {
-	NodeID        string `json:"node_id"`
-	DesiredStatus string `json:"desired_status"`
+	NodeID        string              `json:"node_id"`
+	DesiredStatus string              `json:"desired_status"`
+	DesiredState  domain.DesiredState `json:"desired_state"`
 }

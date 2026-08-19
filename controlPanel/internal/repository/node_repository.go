@@ -32,6 +32,10 @@ type NodeRepository interface {
 	// Update persists changes to an existing node. It returns ErrNotFound if
 	// the node no longer exists.
 	Update(ctx context.Context, node *domain.Node) error
+	// UpdateReconciliation persists only the reconciliation metadata of a node,
+	// leaving status, heartbeat and desired state untouched. It returns
+	// ErrNotFound if the node no longer exists.
+	UpdateReconciliation(ctx context.Context, node *domain.Node) error
 	// Delete removes a node by its UUID. It returns ErrNotFound if no such
 	// node exists.
 	Delete(ctx context.Context, id string) error

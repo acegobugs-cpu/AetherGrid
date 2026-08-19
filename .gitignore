@@ -4,6 +4,7 @@
 
 # Local data
 /data/
+**/data
 /agent/
 
 # Editor/OS

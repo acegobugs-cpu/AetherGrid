@@ -63,6 +63,36 @@ type Node struct {
 	KubernetesEnabled bool
 	WireGuardEnabled  bool
 	LastHeartbeat     *time.Time
-	CreatedAt         time.Time
-	UpdatedAt         time.Time
+
+	// Reconciliation metadata, updated by the reconciliation engine.
+	LastReconciliation           *time.Time
+	LastSuccessfulReconciliation *time.Time
+	LastReconciliationResult     ReconciliationStatus
+	LastReconciliationAction     string
+	LastReconciliationError      string
+	LastReconciliationDeadline   *time.Time
+	ReconciliationAttempts       int
+
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+
+// DesiredState returns the structured desired state declared for the node.
+func (n *Node) DesiredState() DesiredState {
+	return DesiredState{
+		Status:            n.DesiredStatus,
+		KubernetesEnabled: n.KubernetesEnabled,
+		WireGuardEnabled:  n.WireGuardEnabled,
+	}
+}
+
+// ActualState returns the structured actual state currently recorded for the
+// node. It reflects observation only and is never altered by desired state.
+func (n *Node) ActualState() ActualState {
+	return ActualState{
+		Status:            n.Status,
+		KubernetesEnabled: n.KubernetesEnabled,
+		WireGuardEnabled:  n.WireGuardEnabled,
+		LastHeartbeat:     n.LastHeartbeat,
+	}
 }

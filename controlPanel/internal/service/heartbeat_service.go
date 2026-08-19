@@ -12,12 +12,21 @@ import (
 // updating the heartbeat timestamps without overwriting desired state.
 type HeartbeatService struct {
 	repo repository.NodeRepository
+	// notify is invoked when a heartbeat arrives so the reconciliation engine
+	// can re-evaluate the node without waiting for the next sweep.
+	notify func(nodeID string)
 }
 
 // NewHeartbeatService constructs a HeartbeatService backed by the given
 // repository.
 func NewHeartbeatService(repo repository.NodeRepository) *HeartbeatService {
 	return &HeartbeatService{repo: repo}
+}
+
+// SetReconcileNotifier registers the callback invoked whenever a heartbeat is
+// recorded.
+func (s *HeartbeatService) SetReconcileNotifier(notify func(nodeID string)) {
+	s.notify = notify
 }
 
 // Record updates the last_heartbeat and updated_at timestamps for the node
@@ -35,6 +44,9 @@ func (s *HeartbeatService) Record(ctx context.Context, id string) (*domain.Node,
 
 	if err := s.repo.Update(ctx, node); err != nil {
 		return nil, err
+	}
+	if s.notify != nil {
+		s.notify(id)
 	}
 	return node, nil
 }

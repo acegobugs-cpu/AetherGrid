@@ -71,8 +71,11 @@ func (r *NodeRepository) Create(ctx context.Context, node *domain.Node) error {
 		INSERT INTO nodes (
 			id, name, status, desired_status, location, ip_address,
 			kubernetes_enabled, wireguard_enabled, last_heartbeat,
-			created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			last_reconciliation, last_successful_reconciliation,
+			last_reconciliation_result, last_reconciliation_action,
+			last_reconciliation_error, last_reconciliation_deadline,
+			reconciliation_attempts, created_at, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		node.ID,
 		node.Name,
 		string(node.Status),
@@ -82,6 +85,13 @@ func (r *NodeRepository) Create(ctx context.Context, node *domain.Node) error {
 		boolToInt(node.KubernetesEnabled),
 		boolToInt(node.WireGuardEnabled),
 		nullableTime(node.LastHeartbeat),
+		nullableTime(node.LastReconciliation),
+		nullableTime(node.LastSuccessfulReconciliation),
+		string(node.LastReconciliationResult),
+		node.LastReconciliationAction,
+		node.LastReconciliationError,
+		nullableTime(node.LastReconciliationDeadline),
+		node.ReconciliationAttempts,
 		formatTime(node.CreatedAt),
 		formatTime(node.UpdatedAt),
 	)
@@ -99,7 +109,10 @@ func (r *NodeRepository) GetByID(ctx context.Context, id string) (*domain.Node, 
 	row := r.db.QueryRowContext(ctx, `
 		SELECT id, name, status, desired_status, location, ip_address,
 		       kubernetes_enabled, wireguard_enabled, last_heartbeat,
-		       created_at, updated_at
+		       last_reconciliation, last_successful_reconciliation,
+		       last_reconciliation_result, last_reconciliation_action,
+		       last_reconciliation_error, last_reconciliation_deadline,
+		       reconciliation_attempts, created_at, updated_at
 		FROM nodes WHERE id = ?`, id)
 
 	node, err := scanNode(row)
@@ -117,7 +130,10 @@ func (r *NodeRepository) GetAll(ctx context.Context) ([]*domain.Node, error) {
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT id, name, status, desired_status, location, ip_address,
 		       kubernetes_enabled, wireguard_enabled, last_heartbeat,
-		       created_at, updated_at
+		       last_reconciliation, last_successful_reconciliation,
+		       last_reconciliation_result, last_reconciliation_action,
+		       last_reconciliation_error, last_reconciliation_deadline,
+		       reconciliation_attempts, created_at, updated_at
 		FROM nodes ORDER BY created_at`)
 	if err != nil {
 		return nil, fmt.Errorf("querying nodes: %w", err)
@@ -138,7 +154,10 @@ func (r *NodeRepository) GetAll(ctx context.Context) ([]*domain.Node, error) {
 	return nodes, nil
 }
 
-// Update persists changes to an existing node.
+// Update persists changes to an existing node. It writes the observation and
+// desired-state fields only; reconciliation metadata is persisted exclusively
+// through UpdateReconciliation so a heartbeat or state report can never clobber
+// a concurrent reconciliation write.
 func (r *NodeRepository) Update(ctx context.Context, node *domain.Node) error {
 	result, err := r.db.ExecContext(ctx, `
 		UPDATE nodes SET
@@ -169,6 +188,36 @@ func (r *NodeRepository) Update(ctx context.Context, node *domain.Node) error {
 	return nil
 }
 
+// UpdateReconciliation persists only the reconciliation metadata of a node,
+// leaving status, heartbeat and desired state untouched. It returns
+// repository.ErrNotFound if the node does not exist.
+func (r *NodeRepository) UpdateReconciliation(ctx context.Context, node *domain.Node) error {
+	result, err := r.db.ExecContext(ctx, `
+		UPDATE nodes SET
+			last_reconciliation = ?, last_successful_reconciliation = ?,
+			last_reconciliation_result = ?, last_reconciliation_action = ?,
+			last_reconciliation_error = ?, last_reconciliation_deadline = ?,
+			reconciliation_attempts = ?, updated_at = ?
+		WHERE id = ?`,
+		nullableTime(node.LastReconciliation),
+		nullableTime(node.LastSuccessfulReconciliation),
+		string(node.LastReconciliationResult),
+		node.LastReconciliationAction,
+		node.LastReconciliationError,
+		nullableTime(node.LastReconciliationDeadline),
+		node.ReconciliationAttempts,
+		formatTime(node.UpdatedAt),
+		node.ID,
+	)
+	if err != nil {
+		return fmt.Errorf("updating reconciliation metadata for node %q: %w", node.ID, err)
+	}
+	if affected, err := result.RowsAffected(); err == nil && affected == 0 {
+		return repository.ErrNotFound
+	}
+	return nil
+}
+
 // Delete removes a node by UUID.
 func (r *NodeRepository) Delete(ctx context.Context, id string) error {
 	result, err := r.db.ExecContext(ctx, `DELETE FROM nodes WHERE id = ?`, id)
@@ -188,17 +237,24 @@ type rowScanner interface {
 
 func scanNode(scanner rowScanner) (*domain.Node, error) {
 	var (
-		id                string
-		name              string
-		status            string
-		desiredStatus     string
-		location          string
-		ipAddress         string
-		kubernetesEnabled int
-		wireguardEnabled  int
-		lastHeartbeat     sql.NullString
-		createdAt         string
-		updatedAt         string
+		id                           string
+		name                         string
+		status                       string
+		desiredStatus                string
+		location                     string
+		ipAddress                    string
+		kubernetesEnabled            int
+		wireguardEnabled             int
+		lastHeartbeat                sql.NullString
+		lastReconciliation           sql.NullString
+		lastSuccessfulReconciliation sql.NullString
+		lastReconciliationResult     string
+		lastReconciliationAction     string
+		lastReconciliationError      string
+		lastReconciliationDeadline   sql.NullString
+		reconciliationAttempts       int
+		createdAt                    string
+		updatedAt                    string
 	)
 
 	if err := scanner.Scan(
@@ -211,6 +267,13 @@ func scanNode(scanner rowScanner) (*domain.Node, error) {
 		&kubernetesEnabled,
 		&wireguardEnabled,
 		&lastHeartbeat,
+		&lastReconciliation,
+		&lastSuccessfulReconciliation,
+		&lastReconciliationResult,
+		&lastReconciliationAction,
+		&lastReconciliationError,
+		&lastReconciliationDeadline,
+		&reconciliationAttempts,
 		&createdAt,
 		&updatedAt,
 	); err != nil {
@@ -227,16 +290,20 @@ func scanNode(scanner rowScanner) (*domain.Node, error) {
 	}
 
 	node := &domain.Node{
-		ID:                id,
-		Name:              name,
-		Status:            domain.NodeStatus(status),
-		DesiredStatus:     domain.NodeStatus(desiredStatus),
-		Location:          location,
-		IPAddress:         ipAddress,
-		KubernetesEnabled: intToBool(kubernetesEnabled),
-		WireGuardEnabled:  intToBool(wireguardEnabled),
-		CreatedAt:         created,
-		UpdatedAt:         updated,
+		ID:                       id,
+		Name:                     name,
+		Status:                   domain.NodeStatus(status),
+		DesiredStatus:            domain.NodeStatus(desiredStatus),
+		Location:                 location,
+		IPAddress:                ipAddress,
+		KubernetesEnabled:        intToBool(kubernetesEnabled),
+		WireGuardEnabled:         intToBool(wireguardEnabled),
+		LastReconciliationResult: domain.ReconciliationStatus(lastReconciliationResult),
+		LastReconciliationAction: lastReconciliationAction,
+		LastReconciliationError:  lastReconciliationError,
+		ReconciliationAttempts:   reconciliationAttempts,
+		CreatedAt:                created,
+		UpdatedAt:                updated,
 	}
 
 	if lastHeartbeat.Valid {
@@ -245,6 +312,27 @@ func scanNode(scanner rowScanner) (*domain.Node, error) {
 			return nil, fmt.Errorf("parsing last_heartbeat %q: %w", lastHeartbeat.String, err)
 		}
 		node.LastHeartbeat = &heartbeat
+	}
+	if lastReconciliation.Valid {
+		value, err := parseTime(lastReconciliation.String)
+		if err != nil {
+			return nil, fmt.Errorf("parsing last_reconciliation %q: %w", lastReconciliation.String, err)
+		}
+		node.LastReconciliation = &value
+	}
+	if lastSuccessfulReconciliation.Valid {
+		value, err := parseTime(lastSuccessfulReconciliation.String)
+		if err != nil {
+			return nil, fmt.Errorf("parsing last_successful_reconciliation %q: %w", lastSuccessfulReconciliation.String, err)
+		}
+		node.LastSuccessfulReconciliation = &value
+	}
+	if lastReconciliationDeadline.Valid {
+		value, err := parseTime(lastReconciliationDeadline.String)
+		if err != nil {
+			return nil, fmt.Errorf("parsing last_reconciliation_deadline %q: %w", lastReconciliationDeadline.String, err)
+		}
+		node.LastReconciliationDeadline = &value
 	}
 
 	return node, nil

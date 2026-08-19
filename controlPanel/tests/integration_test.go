@@ -16,10 +16,22 @@ import (
 	"time"
 
 	apihandler "github.com/acegobugs-cpu/AetherGrid/internal/http"
+	"github.com/acegobugs-cpu/AetherGrid/internal/reconcile"
 	"github.com/acegobugs-cpu/AetherGrid/internal/repository/sqlite"
 	"github.com/acegobugs-cpu/AetherGrid/internal/service"
 	"github.com/acegobugs-cpu/AetherGrid/migrations"
 )
+
+// testReconcileConfig is the engine configuration used by the integration
+// tests. The engine is not started; manual reconciliation runs synchronously.
+var testReconcileConfig = reconcile.Config{
+	Interval:         time.Minute,
+	Workers:          2,
+	HeartbeatTimeout: 30 * time.Second,
+	MaxRetries:       3,
+	MaxBackoff:       time.Second,
+	RecoveryTimeout:  time.Minute,
+}
 
 // appInstance represents one running control plane instance backed by a
 // specific database file.
@@ -43,11 +55,14 @@ func startApp(t *testing.T, dbPath string) *appInstance {
 	}
 
 	logger := log.New(io.Discard, "", 0)
+	commandService := service.NewCommandService(sqlite.NewCommandRepository(repo.DB()), repo)
+	reconciler := service.NewReconciliationService(testReconcileConfig, repo,
+		sqlite.NewReconciliationRepository(repo.DB()), commandService, logger)
 	router := apihandler.NewRouter(
 		service.NewNodeService(repo),
 		service.NewHeartbeatService(repo),
-		service.NewReconciliationService(repo),
-		service.NewCommandService(sqlite.NewCommandRepository(repo.DB()), repo),
+		reconciler,
+		commandService,
 		logger,
 	)
 	server := httptest.NewServer(router)
@@ -195,7 +210,15 @@ func TestControlPlaneLifecycle(t *testing.T) {
 	if reconcileBody["result"] != "DRIFT_DETECTED" {
 		t.Fatalf("step 9: expected DRIFT_DETECTED, got %v", reconcileBody["result"])
 	}
-	if reconcileBody["desired_state"] != "READY" || reconcileBody["actual_state"] != "PROVISIONING" {
+	desiredState, ok := reconcileBody["desired_state"].(map[string]any)
+	if !ok {
+		t.Fatalf("step 9: expected structured desired_state, got %v", reconcileBody["desired_state"])
+	}
+	actualState, ok := reconcileBody["actual_state"].(map[string]any)
+	if !ok {
+		t.Fatalf("step 9: expected structured actual_state, got %v", reconcileBody["actual_state"])
+	}
+	if desiredState["status"] != "READY" || actualState["status"] != "PROVISIONING" {
 		t.Fatalf("step 9: unexpected comparison: %v", reconcileBody)
 	}
 

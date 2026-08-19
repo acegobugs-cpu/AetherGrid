@@ -30,11 +30,20 @@ func (e *ValidationError) Error() string {
 // deletion and state updates.
 type NodeService struct {
 	repo repository.NodeRepository
+	// notify is invoked when a node's state changes so the reconciliation
+	// engine can reconcile immediately rather than waiting for the next sweep.
+	notify func(nodeID string)
 }
 
 // NewNodeService constructs a NodeService backed by the given repository.
 func NewNodeService(repo repository.NodeRepository) *NodeService {
 	return &NodeService{repo: repo}
+}
+
+// SetReconcileNotifier registers the callback invoked whenever a node's
+// desired or actual state changes.
+func (s *NodeService) SetReconcileNotifier(notify func(nodeID string)) {
+	s.notify = notify
 }
 
 // CreateNodeInput carries the operator-supplied fields for a new node.
@@ -69,6 +78,9 @@ func (s *NodeService) Create(ctx context.Context, input CreateNodeInput) (*domai
 
 	if err := s.repo.Create(ctx, node); err != nil {
 		return nil, err
+	}
+	if s.notify != nil {
+		s.notify(node.ID)
 	}
 	return node, nil
 }
@@ -115,6 +127,9 @@ func (s *NodeService) UpdateStatus(ctx context.Context, id string, status domain
 	if err := s.repo.Update(ctx, node); err != nil {
 		return nil, err
 	}
+	if s.notify != nil {
+		s.notify(id)
+	}
 	return node, nil
 }
 
@@ -134,6 +149,37 @@ func (s *NodeService) SetDesiredStatus(ctx context.Context, id string, status do
 
 	if err := s.repo.Update(ctx, node); err != nil {
 		return nil, err
+	}
+	if s.notify != nil {
+		s.notify(id)
+	}
+	return node, nil
+}
+
+// SetDesiredState updates the structured desired state of a node. Only the
+// declared fields are overwritten; a zero-status input leaves the status
+// untouched so partial updates are safe.
+func (s *NodeService) SetDesiredState(ctx context.Context, id string, desired domain.DesiredState) (*domain.Node, error) {
+	node, err := s.repo.GetByID(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+
+	if desired.Status != "" {
+		if !desired.Status.Valid() {
+			return nil, &ValidationError{Message: fmt.Sprintf("invalid status %q", desired.Status)}
+		}
+		node.DesiredStatus = desired.Status
+	}
+	node.KubernetesEnabled = desired.KubernetesEnabled
+	node.WireGuardEnabled = desired.WireGuardEnabled
+	node.UpdatedAt = time.Now().UTC()
+
+	if err := s.repo.Update(ctx, node); err != nil {
+		return nil, err
+	}
+	if s.notify != nil {
+		s.notify(id)
 	}
 	return node, nil
 }

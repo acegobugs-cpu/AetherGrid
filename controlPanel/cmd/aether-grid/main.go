@@ -14,6 +14,7 @@ import (
 
 	"github.com/acegobugs-cpu/AetherGrid/internal/config"
 	apihandler "github.com/acegobugs-cpu/AetherGrid/internal/http"
+	"github.com/acegobugs-cpu/AetherGrid/internal/reconcile"
 	"github.com/acegobugs-cpu/AetherGrid/internal/repository/sqlite"
 	"github.com/acegobugs-cpu/AetherGrid/internal/service"
 	"github.com/acegobugs-cpu/AetherGrid/migrations"
@@ -46,8 +47,17 @@ func main() {
 
 	nodeService := service.NewNodeService(nodeRepo)
 	heartbeatService := service.NewHeartbeatService(nodeRepo)
-	reconciler := service.NewReconciliationService(nodeRepo)
 	commandService := service.NewCommandService(sqlite.NewCommandRepository(nodeRepo.DB()), nodeRepo)
+	reconciler := service.NewReconciliationService(
+		reconcileConfig(cfg),
+		nodeRepo,
+		sqlite.NewReconciliationRepository(nodeRepo.DB()),
+		commandService,
+		logger,
+	)
+
+	nodeService.SetReconcileNotifier(reconciler.Notify)
+	heartbeatService.SetReconcileNotifier(reconciler.Notify)
 
 	router := apihandler.NewRouter(nodeService, heartbeatService, reconciler, commandService, logger)
 
@@ -56,6 +66,9 @@ func main() {
 		Handler:           router,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
+
+	reconciler.Start()
+	defer reconciler.Stop()
 
 	serverErrors := make(chan error, 1)
 	go func() {
@@ -89,4 +102,16 @@ func ensureParentDir(path string) error {
 		return nil
 	}
 	return os.MkdirAll(dir, 0o755)
+}
+
+// reconcileConfig maps the application configuration onto the engine config.
+func reconcileConfig(cfg config.Config) reconcile.Config {
+	return reconcile.Config{
+		Interval:         cfg.ReconciliationInterval,
+		Workers:          cfg.ReconciliationWorkers,
+		HeartbeatTimeout: cfg.NodeHeartbeatTimeout,
+		MaxRetries:       cfg.ReconciliationMaxRetries,
+		MaxBackoff:       cfg.ReconciliationMaxBackoff,
+		RecoveryTimeout:  cfg.ReconciliationRecoveryTimeout,
+	}
 }

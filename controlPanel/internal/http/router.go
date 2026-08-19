@@ -19,8 +19,9 @@ func NewRouter(
 	commands *service.CommandService,
 	logger *log.Logger,
 ) http.Handler {
-	nodeHandler := handlers.NewNodeHandler(nodes, heartbeats, reconciler, logger)
+	nodeHandler := handlers.NewNodeHandler(nodes, heartbeats, logger)
 	commandHandler := handlers.NewCommandHandler(commands, logger)
+	reconciliationHandler := handlers.NewReconciliationHandler(reconciler, logger)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /nodes", nodeHandler.Create)
@@ -34,7 +35,11 @@ func NewRouter(
 	mux.HandleFunc("PUT /nodes/{id}/state", nodeHandler.SetState)
 	mux.HandleFunc("GET /nodes/{id}/desired-state", nodeHandler.DesiredState)
 	mux.HandleFunc("PUT /nodes/{id}/desired-state", nodeHandler.SetDesiredState)
-	mux.HandleFunc("POST /nodes/{id}/reconcile", nodeHandler.Reconcile)
+
+	mux.HandleFunc("POST /nodes/{id}/reconcile", reconciliationHandler.Reconcile)
+	mux.HandleFunc("GET /nodes/{id}/reconciliation", reconciliationHandler.State)
+	mux.HandleFunc("GET /nodes/{id}/reconciliation/history", reconciliationHandler.History)
+	mux.HandleFunc("GET /reconciliation/status", reconciliationHandler.Status)
 
 	mux.HandleFunc("POST /nodes/{id}/commands", commandHandler.Create)
 	mux.HandleFunc("GET /nodes/{id}/commands", commandHandler.List)

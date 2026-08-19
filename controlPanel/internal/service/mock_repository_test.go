@@ -58,6 +58,14 @@ func (m *mockNodeRepository) Update(_ context.Context, node *domain.Node) error 
 	return nil
 }
 
+func (m *mockNodeRepository) UpdateReconciliation(_ context.Context, node *domain.Node) error {
+	if _, ok := m.nodes[node.ID]; !ok {
+		return repository.ErrNotFound
+	}
+	m.nodes[node.ID] = cloneNode(node)
+	return nil
+}
+
 func (m *mockNodeRepository) Delete(_ context.Context, id string) error {
 	node, ok := m.nodes[id]
 	if !ok {

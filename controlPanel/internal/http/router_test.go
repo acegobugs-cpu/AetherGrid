@@ -10,12 +10,25 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"testing"
+	"time"
 
 	apihandler "github.com/acegobugs-cpu/AetherGrid/internal/http"
+	"github.com/acegobugs-cpu/AetherGrid/internal/reconcile"
 	"github.com/acegobugs-cpu/AetherGrid/internal/repository/sqlite"
 	"github.com/acegobugs-cpu/AetherGrid/internal/service"
 	"github.com/acegobugs-cpu/AetherGrid/migrations"
 )
+
+// testReconcileConfig is the engine configuration used by the HTTP tests. The
+// engine is never started here; manual reconciliation runs synchronously.
+var testReconcileConfig = reconcile.Config{
+	Interval:         time.Minute,
+	Workers:          2,
+	HeartbeatTimeout: 30 * time.Second,
+	MaxRetries:       3,
+	MaxBackoff:       time.Second,
+	RecoveryTimeout:  time.Minute,
+}
 
 // testApp wires the full HTTP stack against a real SQLite database in a
 // temporary directory.
@@ -40,11 +53,14 @@ func newTestApp(t *testing.T) *testApp {
 	}
 
 	logger := log.New(io.Discard, "", 0)
+	commandService := service.NewCommandService(sqlite.NewCommandRepository(repo.DB()), repo)
+	reconciler := service.NewReconciliationService(testReconcileConfig, repo,
+		sqlite.NewReconciliationRepository(repo.DB()), commandService, logger)
 	router := apihandler.NewRouter(
 		service.NewNodeService(repo),
 		service.NewHeartbeatService(repo),
-		service.NewReconciliationService(repo),
-		service.NewCommandService(sqlite.NewCommandRepository(repo.DB()), repo),
+		reconciler,
+		commandService,
 		logger,
 	)
 	server := httptest.NewServer(router)
@@ -644,5 +660,95 @@ func TestReportCommandResultInvalidCommandID(t *testing.T) {
 		map[string]any{"status": "SUCCEEDED"})
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d", resp.StatusCode)
+	}
+}
+
+func TestReconcileStructuredResult(t *testing.T) {
+	app := newTestApp(t)
+
+	id := createNode(t, app)
+
+	resp, body := app.request(t, http.MethodPost, "/nodes/"+id+"/reconcile", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d (%v)", resp.StatusCode, body)
+	}
+	object := asMap(t, body)
+	if object["result"] != "DRIFT_DETECTED" {
+		t.Fatalf("expected DRIFT_DETECTED, got %v", object["result"])
+	}
+	if _, ok := object["desired_state"].(map[string]any); !ok {
+		t.Errorf("expected structured desired_state, got %v", object["desired_state"])
+	}
+	if _, ok := object["actual_state"].(map[string]any); !ok {
+		t.Errorf("expected structured actual_state, got %v", object["actual_state"])
+	}
+	if _, ok := object["differences"].([]any); !ok {
+		t.Errorf("expected differences array, got %v", object["differences"])
+	}
+}
+
+func TestReconciliationStateAndHistory(t *testing.T) {
+	app := newTestApp(t)
+
+	id := createNode(t, app)
+
+	// Run a manual reconcile to persist metadata and history.
+	if resp, body := app.request(t, http.MethodPost, "/nodes/"+id+"/reconcile", nil); resp.StatusCode != http.StatusOK {
+		t.Fatalf("reconcile failed: %d (%v)", resp.StatusCode, body)
+	}
+
+	// GET /nodes/{id}/reconciliation reports the last result.
+	resp, body := app.request(t, http.MethodGet, "/nodes/"+id+"/reconciliation", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d (%v)", resp.StatusCode, body)
+	}
+	object := asMap(t, body)
+	if object["result"] != "DRIFT_DETECTED" {
+		t.Errorf("expected DRIFT_DETECTED state, got %v", object["result"])
+	}
+	if object["last_reconciliation"] == nil {
+		t.Error("expected last_reconciliation timestamp")
+	}
+
+	// GET /nodes/{id}/reconciliation/history returns persisted events.
+	resp, body = app.request(t, http.MethodGet, "/nodes/"+id+"/reconciliation/history", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d (%v)", resp.StatusCode, body)
+	}
+	events, ok := body.([]any)
+	if !ok {
+		t.Fatalf("expected array response, got %T", body)
+	}
+	if len(events) < 1 {
+		t.Fatalf("expected at least 1 history row, got %d", len(events))
+	}
+	if asMap(t, events[0])["result"] != "DRIFT_DETECTED" {
+		t.Errorf("expected DRIFT_DETECTED history row, got %v", events[0])
+	}
+}
+
+func TestReconciliationHistoryNotFound(t *testing.T) {
+	app := newTestApp(t)
+
+	id := "f47ac10b-58cc-4372-a567-0e02b2c3d479"
+	resp, _ := app.request(t, http.MethodGet, "/nodes/"+id+"/reconciliation", nil)
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", resp.StatusCode)
+	}
+}
+
+func TestReconciliationStatusEndpoint(t *testing.T) {
+	app := newTestApp(t)
+
+	resp, body := app.request(t, http.MethodGet, "/reconciliation/status", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d (%v)", resp.StatusCode, body)
+	}
+	object := asMap(t, body)
+	if _, ok := object["pending_work"]; !ok {
+		t.Errorf("expected pending_work counter, got %v", object)
+	}
+	if _, ok := object["nodes_reconciled"]; !ok {
+		t.Errorf("expected nodes_reconciled counter, got %v", object)
 	}
 }

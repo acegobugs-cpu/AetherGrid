@@ -142,6 +142,16 @@ func (s *CommandService) ReportResult(ctx context.Context, input ReportResultInp
 	return command, nil
 }
 
+// DispatchRestart enqueues a RESTART_AGENT command for the node. It is the
+// recovery action used by the reconciliation engine. It returns
+// repository.ErrNotFound if the node does not exist.
+func (s *CommandService) DispatchRestart(ctx context.Context, nodeID string) (*domain.Command, error) {
+	return s.Create(ctx, CreateCommandInput{
+		NodeID: nodeID,
+		Type:   domain.CommandRestartAgent,
+	})
+}
+
 // IsCommandNotFound reports whether err represents a missing command.
 func IsCommandNotFound(err error) bool {
 	return errors.Is(err, repository.ErrNotFound)

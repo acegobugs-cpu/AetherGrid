@@ -40,6 +40,15 @@ func (s CommandStatus) Terminal() bool {
 	return s == CommandSucceeded || s == CommandFailed
 }
 
+// Command types understood by the control plane.
+const (
+	// CommandGetStatus asks an agent to report its current runtime status.
+	CommandGetStatus = "GET_STATUS"
+	// CommandRestartAgent asks an agent to restart itself (its supervisor
+	// brings it back). The reconciliation engine uses it for node recovery.
+	CommandRestartAgent = "RESTART_AGENT"
+)
+
 // Command is the domain model for an instruction the control plane sends to
 // an edge node agent. It is independent of both HTTP and persistence concerns.
 type Command struct {
