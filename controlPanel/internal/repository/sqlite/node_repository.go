@@ -67,15 +67,7 @@ func (r *NodeRepository) Close() error {
 
 // Create inserts a new node record.
 func (r *NodeRepository) Create(ctx context.Context, node *domain.Node) error {
-	_, err := r.db.ExecContext(ctx, `
-		INSERT INTO nodes (
-			id, name, status, desired_status, location, ip_address,
-			kubernetes_enabled, wireguard_enabled, last_heartbeat,
-			last_reconciliation, last_successful_reconciliation,
-			last_reconciliation_result, last_reconciliation_action,
-			last_reconciliation_error, last_reconciliation_deadline,
-			reconciliation_attempts, created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+	args := []any{
 		node.ID,
 		node.Name,
 		string(node.Status),
@@ -83,7 +75,11 @@ func (r *NodeRepository) Create(ctx context.Context, node *domain.Node) error {
 		node.Location,
 		node.IPAddress,
 		boolToInt(node.KubernetesEnabled),
+		node.KubernetesMinimumReadyNodes,
 		boolToInt(node.WireGuardEnabled),
+	}
+	args = append(args, kubernetesScanArgs(node.Kubernetes)...)
+	args = append(args,
 		nullableTime(node.LastHeartbeat),
 		nullableTime(node.LastReconciliation),
 		nullableTime(node.LastSuccessfulReconciliation),
@@ -94,6 +90,23 @@ func (r *NodeRepository) Create(ctx context.Context, node *domain.Node) error {
 		node.ReconciliationAttempts,
 		formatTime(node.CreatedAt),
 		formatTime(node.UpdatedAt),
+	)
+
+	_, err := r.db.ExecContext(ctx, `
+		INSERT INTO nodes (
+			id, name, status, desired_status, location, ip_address,
+			kubernetes_enabled, kubernetes_minimum_ready_nodes, wireguard_enabled,
+			kubernetes_available, kubernetes_status, kubernetes_version,
+			kubernetes_node_count, kubernetes_ready_nodes, kubernetes_not_ready_nodes,
+			kubernetes_total_pods, kubernetes_running_pods, kubernetes_failed_pods,
+			kubernetes_reported_at,
+			last_heartbeat,
+			last_reconciliation, last_successful_reconciliation,
+			last_reconciliation_result, last_reconciliation_action,
+			last_reconciliation_error, last_reconciliation_deadline,
+			reconciliation_attempts, created_at, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		args...,
 	)
 	if err != nil {
 		if isUniqueViolation(err) {
@@ -108,7 +121,12 @@ func (r *NodeRepository) Create(ctx context.Context, node *domain.Node) error {
 func (r *NodeRepository) GetByID(ctx context.Context, id string) (*domain.Node, error) {
 	row := r.db.QueryRowContext(ctx, `
 		SELECT id, name, status, desired_status, location, ip_address,
-		       kubernetes_enabled, wireguard_enabled, last_heartbeat,
+		       kubernetes_enabled, kubernetes_minimum_ready_nodes, wireguard_enabled,
+		       kubernetes_available, kubernetes_status, kubernetes_version,
+		       kubernetes_node_count, kubernetes_ready_nodes, kubernetes_not_ready_nodes,
+		       kubernetes_total_pods, kubernetes_running_pods, kubernetes_failed_pods,
+		       kubernetes_reported_at,
+		       last_heartbeat,
 		       last_reconciliation, last_successful_reconciliation,
 		       last_reconciliation_result, last_reconciliation_action,
 		       last_reconciliation_error, last_reconciliation_deadline,
@@ -129,7 +147,12 @@ func (r *NodeRepository) GetByID(ctx context.Context, id string) (*domain.Node, 
 func (r *NodeRepository) GetAll(ctx context.Context) ([]*domain.Node, error) {
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT id, name, status, desired_status, location, ip_address,
-		       kubernetes_enabled, wireguard_enabled, last_heartbeat,
+		       kubernetes_enabled, kubernetes_minimum_ready_nodes, wireguard_enabled,
+		       kubernetes_available, kubernetes_status, kubernetes_version,
+		       kubernetes_node_count, kubernetes_ready_nodes, kubernetes_not_ready_nodes,
+		       kubernetes_total_pods, kubernetes_running_pods, kubernetes_failed_pods,
+		       kubernetes_reported_at,
+		       last_heartbeat,
 		       last_reconciliation, last_successful_reconciliation,
 		       last_reconciliation_result, last_reconciliation_action,
 		       last_reconciliation_error, last_reconciliation_deadline,
@@ -159,22 +182,34 @@ func (r *NodeRepository) GetAll(ctx context.Context) ([]*domain.Node, error) {
 // through UpdateReconciliation so a heartbeat or state report can never clobber
 // a concurrent reconciliation write.
 func (r *NodeRepository) Update(ctx context.Context, node *domain.Node) error {
-	result, err := r.db.ExecContext(ctx, `
-		UPDATE nodes SET
-			name = ?, status = ?, desired_status = ?, location = ?,
-			ip_address = ?, kubernetes_enabled = ?, wireguard_enabled = ?,
-			last_heartbeat = ?, updated_at = ?
-		WHERE id = ?`,
+	args := []any{
 		node.Name,
 		string(node.Status),
 		string(node.DesiredStatus),
 		node.Location,
 		node.IPAddress,
 		boolToInt(node.KubernetesEnabled),
+		node.KubernetesMinimumReadyNodes,
 		boolToInt(node.WireGuardEnabled),
+	}
+	args = append(args, kubernetesScanArgs(node.Kubernetes)...)
+	args = append(args,
 		nullableTime(node.LastHeartbeat),
 		formatTime(node.UpdatedAt),
 		node.ID,
+	)
+
+	result, err := r.db.ExecContext(ctx, `
+		UPDATE nodes SET
+			name = ?, status = ?, desired_status = ?, location = ?,
+			ip_address = ?, kubernetes_enabled = ?, kubernetes_minimum_ready_nodes = ?,
+			wireguard_enabled = ?, kubernetes_available = ?, kubernetes_status = ?,
+			kubernetes_version = ?, kubernetes_node_count = ?, kubernetes_ready_nodes = ?,
+			kubernetes_not_ready_nodes = ?, kubernetes_total_pods = ?,
+			kubernetes_running_pods = ?, kubernetes_failed_pods = ?,
+			kubernetes_reported_at = ?, last_heartbeat = ?, updated_at = ?
+		WHERE id = ?`,
+		args...,
 	)
 	if err != nil {
 		if isUniqueViolation(err) {
@@ -244,7 +279,18 @@ func scanNode(scanner rowScanner) (*domain.Node, error) {
 		location                     string
 		ipAddress                    string
 		kubernetesEnabled            int
+		kubernetesMinimumReadyNodes  int
 		wireguardEnabled             int
+		kubernetesAvailable          int
+		kubernetesStatus             string
+		kubernetesVersion            string
+		kubernetesNodeCount          int
+		kubernetesReadyNodes         int
+		kubernetesNotReadyNodes      int
+		kubernetesTotalPods          int
+		kubernetesRunningPods        int
+		kubernetesFailedPods         int
+		kubernetesReportedAt         sql.NullString
 		lastHeartbeat                sql.NullString
 		lastReconciliation           sql.NullString
 		lastSuccessfulReconciliation sql.NullString
@@ -265,7 +311,18 @@ func scanNode(scanner rowScanner) (*domain.Node, error) {
 		&location,
 		&ipAddress,
 		&kubernetesEnabled,
+		&kubernetesMinimumReadyNodes,
 		&wireguardEnabled,
+		&kubernetesAvailable,
+		&kubernetesStatus,
+		&kubernetesVersion,
+		&kubernetesNodeCount,
+		&kubernetesReadyNodes,
+		&kubernetesNotReadyNodes,
+		&kubernetesTotalPods,
+		&kubernetesRunningPods,
+		&kubernetesFailedPods,
+		&kubernetesReportedAt,
 		&lastHeartbeat,
 		&lastReconciliation,
 		&lastSuccessfulReconciliation,
@@ -290,20 +347,45 @@ func scanNode(scanner rowScanner) (*domain.Node, error) {
 	}
 
 	node := &domain.Node{
-		ID:                       id,
-		Name:                     name,
-		Status:                   domain.NodeStatus(status),
-		DesiredStatus:            domain.NodeStatus(desiredStatus),
-		Location:                 location,
-		IPAddress:                ipAddress,
-		KubernetesEnabled:        intToBool(kubernetesEnabled),
-		WireGuardEnabled:         intToBool(wireguardEnabled),
-		LastReconciliationResult: domain.ReconciliationStatus(lastReconciliationResult),
-		LastReconciliationAction: lastReconciliationAction,
-		LastReconciliationError:  lastReconciliationError,
-		ReconciliationAttempts:   reconciliationAttempts,
-		CreatedAt:                created,
-		UpdatedAt:                updated,
+		ID:                          id,
+		Name:                        name,
+		Status:                      domain.NodeStatus(status),
+		DesiredStatus:               domain.NodeStatus(desiredStatus),
+		Location:                    location,
+		IPAddress:                   ipAddress,
+		KubernetesEnabled:           intToBool(kubernetesEnabled),
+		KubernetesMinimumReadyNodes: kubernetesMinimumReadyNodes,
+		WireGuardEnabled:            intToBool(wireguardEnabled),
+		LastReconciliationResult:    domain.ReconciliationStatus(lastReconciliationResult),
+		LastReconciliationAction:    lastReconciliationAction,
+		LastReconciliationError:     lastReconciliationError,
+		ReconciliationAttempts:      reconciliationAttempts,
+		CreatedAt:                   created,
+		UpdatedAt:                   updated,
+	}
+
+	if kubernetesStatus != "" {
+		var reportedAt time.Time
+		if kubernetesReportedAt.Valid {
+			reportedAt, err = parseTime(kubernetesReportedAt.String)
+			if err != nil {
+				return nil, fmt.Errorf("parsing kubernetes_reported_at %q: %w", kubernetesReportedAt.String, err)
+			}
+		}
+		node.Kubernetes = &domain.KubernetesActualState{
+			Available:     intToBool(kubernetesAvailable),
+			Status:        domain.KubernetesStatus(kubernetesStatus),
+			Version:       kubernetesVersion,
+			NodeCount:     kubernetesNodeCount,
+			ReadyNodes:    kubernetesReadyNodes,
+			NotReadyNodes: kubernetesNotReadyNodes,
+			Workload: domain.WorkloadSummary{
+				TotalPods:   kubernetesTotalPods,
+				RunningPods: kubernetesRunningPods,
+				FailedPods:  kubernetesFailedPods,
+			},
+			ReportedAt: reportedAt,
+		}
 	}
 
 	if lastHeartbeat.Valid {
@@ -351,6 +433,26 @@ func nullableTime(t *time.Time) any {
 		return nil
 	}
 	return formatTime(*t)
+}
+
+// kubernetesScanArgs returns the observed Kubernetes state columns of a node
+// in the fixed order used by every nodes query.
+func kubernetesScanArgs(kubernetes *domain.KubernetesActualState) []any {
+	if kubernetes == nil {
+		return []any{0, "", "", 0, 0, 0, 0, 0, 0, nil}
+	}
+	return []any{
+		boolToInt(kubernetes.Available),
+		string(kubernetes.Status),
+		kubernetes.Version,
+		kubernetes.NodeCount,
+		kubernetes.ReadyNodes,
+		kubernetes.NotReadyNodes,
+		kubernetes.Workload.TotalPods,
+		kubernetes.Workload.RunningPods,
+		kubernetes.Workload.FailedPods,
+		formatTime(kubernetes.ReportedAt),
+	}
 }
 
 func boolToInt(value bool) int {

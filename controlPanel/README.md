@@ -4,11 +4,12 @@ A software-controlled system for provisioning, connecting, deploying, monitoring
 
 AETHER-GRID follows a **desired-state and reconciliation model**: an operator declares what the infrastructure should look like, and the system continuously compares that desired state against the actual state of the edge fleet, detecting (and repairing) drift.
 
-This repository contains the **Control Plane** across three phases:
+This repository contains the **Control Plane** across four phases:
 
 - **Phase 1** — control plane foundation: node registry, desired/actual state, heartbeats, drift detection.
 - **Phase 2** — the Edge Node Agent (in `../nodeAgent`).
 - **Phase 3** — the **Reconciliation Engine**: continuous observation, planning and corrective action execution.
+- **Phase 4** — the **Kubernetes Integration** layer: cluster observation through the agent, Kubernetes desired/actual state and drift detection.
 
 ---
 
@@ -98,6 +99,78 @@ Every node stores `last_reconciliation`, `last_successful_reconciliation`, `last
 | `RECONCILIATION_RECOVERY_TIMEOUT`| `60s`   | How long a recovery may take to converge     |
 
 Setting `RECONCILIATION_MAX_RETRIES=0` enables **detect-only mode**: drift is reported but never acted on.
+
+---
+
+## Phase 4: Kubernetes Integration
+
+Phase 4 establishes the Kubernetes integration layer. AETHER-GRID does **not** become a Kubernetes operator and does **not** install or repair clusters; it observes an existing cluster through the edge agent and reconciles the fleet toward the declared expectation.
+
+### Where the integration lives
+
+```text
+AETHER-GRID logic → Kubernetes abstraction → client-go → Kubernetes API
+```
+
+- The **node agent** owns all contact with Kubernetes via `client-go`, hidden behind a small interface (`kubernetes.KubernetesClient`). Command handlers and the reconciliation engine never call `client-go` directly.
+- The **control plane** never talks to a Kubernetes cluster. It consumes the agent's reported Kubernetes state and the declared desired state, and detects drift.
+
+### Kubernetes state model
+
+- **Desired state** (per node): `kubernetes.enabled` and `kubernetes.minimum_ready_nodes`. When `enabled` is false, no Kubernetes expectations are enforced.
+- **Actual state** (reported by the agent): `available`, `status` (`DISABLED`/`UNAVAILABLE`/`DEGRADED`/`READY`), `version`, `node_count`, `ready_nodes`, `not_ready_nodes`, and a `workload` summary (`total_pods`, `running_pods`, `failed_pods`).
+- Kubernetes health is **separate** from node health: a node can be `READY` while its Kubernetes integration is `UNAVAILABLE`.
+
+### Drift and reconciliation
+
+The reconciliation engine compares desired vs observed Kubernetes state:
+
+- Desired `enabled` while the cluster is unavailable → difference `kubernetes.available` (`desired: true`, `actual: false`).
+- Cluster available but `ready_nodes < minimum_ready_nodes` → difference `kubernetes.ready_nodes`.
+
+These differences surface as `DRIFT_DETECTED` in the structured reconcile result. Phase 4 has **no executable Kubernetes remediation** — the planner deliberately produces no corrective action for Kubernetes drift, and actions that would modify the cluster fail explicitly as unsupported rather than faking success. Node lifecycle recovery (`RESTART_AGENT`) is unaffected.
+
+### Agent-side commands
+
+| Command                    | Meaning                                            |
+| -------------------------- | -------------------------------------------------- |
+| `GET_KUBERNETES_STATUS`    | Report the observed Kubernetes state               |
+| `LIST_KUBERNETES_NODES`    | List cluster nodes                                 |
+| `LIST_KUBERNETES_PODS`     | List cluster pods (optional `namespace` parameter) |
+| `CREATE_TEST_NAMESPACE`    | Create a dedicated test namespace                  |
+| `DELETE_TEST_NAMESPACE`    | Delete a dedicated test namespace                  |
+
+Every Kubernetes API call runs with a bounded context timeout; errors are translated to structured codes (`KUBERNETES_UNAVAILABLE`, `KUBERNETES_UNAUTHORIZED`, `KUBERNETES_FORBIDDEN`, `KUBERNETES_TIMEOUT`, `KUBERNETES_RESOURCE_NOT_FOUND`, `KUBERNETES_INVALID_CONFIGURATION`). Credentials are never logged and never included in state reports.
+
+### Control-plane API
+
+| Method | Path                                   | Description                                            |
+| ------ | -------------------------------------- | ------------------------------------------------------ |
+| GET    | `/nodes/{id}/kubernetes`               | Stored desired + last-reported Kubernetes state        |
+| GET    | `/nodes/{id}/kubernetes/nodes`         | Dispatch `LIST_KUBERNETES_NODES` to the agent (`202`)  |
+| GET    | `/nodes/{id}/kubernetes/pods`          | Dispatch `LIST_KUBERNETES_PODS` to the agent (`202`)   |
+
+The `nodes`/`pods` endpoints answer `202 Accepted` with a `PENDING` command; poll `GET /nodes/{id}/commands` for the result.
+
+### Agent configuration
+
+| Variable                      | Default | Description                                          |
+| ----------------------------- | ------- | ---------------------------------------------------- |
+| `KUBERNETES_ENABLED`          | `false` | Turns the agent's Kubernetes integration on          |
+| `KUBECONFIG`                  | (auto)  | Explicit kubeconfig path (falls back to standard loading rules, then in-cluster config) |
+| `KUBERNETES_REQUEST_TIMEOUT`  | `10s`   | Timeout for each Kubernetes API call                 |
+
+With `KUBERNETES_ENABLED=false` the agent reports `DISABLED`; with `KUBERNETES_ENABLED=true` and no reachable cluster it reports `UNAVAILABLE` and keeps running.
+
+### Testing
+
+Real-cluster tests run only when a development cluster (kind/minikube) is available:
+
+```bash
+INTEGRATION_KUBERNETES=true go test ./...
+```
+
+Without the variable (or without a cluster) those tests skip; the normal suite uses a mocked `KubernetesClient`.
 
 ---
 
@@ -209,6 +282,9 @@ All endpoints accept and return JSON. Errors are returned consistently as `{"err
 | POST   | `/nodes/{id}/commands`                 | Dispatch a command to an agent                   |
 | GET    | `/nodes/{id}/commands`                 | List a node's commands                           |
 | POST   | `/nodes/{id}/commands/{command_id}/result` | Report a command result                      |
+| GET    | `/nodes/{id}/kubernetes`               | Get a node's Kubernetes desired + observed state |
+| GET    | `/nodes/{id}/kubernetes/nodes`         | List cluster nodes via the agent (`202`)         |
+| GET    | `/nodes/{id}/kubernetes/pods`          | List cluster pods via the agent (`202`)          |
 
 ### curl examples
 
@@ -270,7 +346,30 @@ Set the desired state:
 ```bash
 curl -X PUT http://localhost:8080/nodes/{id}/desired-state \
   -H "Content-Type: application/json" \
-  -d '{"status":"READY"}'
+  -d '{"status":"READY","kubernetes":{"enabled":true,"minimum_ready_nodes":1}}'
+```
+
+Report actual state including the observed Kubernetes summary (as the agent does):
+
+```bash
+curl -X PUT http://localhost:8080/nodes/{id}/state \
+  -H "Content-Type: application/json" \
+  -d '{
+    "status":"READY",
+    "kubernetes":{
+      "available":true,"status":"DEGRADED","version":"v1.31.0",
+      "node_count":2,"ready_nodes":1,"not_ready_nodes":1,
+      "workload":{"total_pods":5,"running_pods":4,"failed_pods":1}
+    }
+  }'
+```
+
+Inspect and query Kubernetes state through the control plane:
+
+```bash
+curl http://localhost:8080/nodes/{id}/kubernetes
+curl -X GET http://localhost:8080/nodes/{id}/kubernetes/nodes
+curl -X GET http://localhost:8080/nodes/{id}/kubernetes/pods?namespace=default
 ```
 
 Delete a node:

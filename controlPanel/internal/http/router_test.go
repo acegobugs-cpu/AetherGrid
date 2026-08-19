@@ -124,7 +124,7 @@ func asMap(t *testing.T, body any) map[string]any {
 	return object
 }
 
-const validNodePayload = `{"name":"edge-01","location":"addis-01","ip_address":"10.0.0.10","kubernetes_enabled":true,"wireguard_enabled":true}`
+const validNodePayload = `{"name":"edge-01","location":"addis-01","ip_address":"10.0.0.10","kubernetes_enabled":false,"wireguard_enabled":true}`
 
 func createNode(t *testing.T, app *testApp) string {
 	t.Helper()
@@ -137,7 +137,7 @@ func createNodeNamed(t *testing.T, app *testApp, name string) string {
 		"name":               name,
 		"location":           "addis-01",
 		"ip_address":         "10.0.0.10",
-		"kubernetes_enabled": true,
+		"kubernetes_enabled": false,
 		"wireguard_enabled":  true,
 	})
 	if err != nil {
@@ -750,5 +750,230 @@ func TestReconciliationStatusEndpoint(t *testing.T) {
 	}
 	if _, ok := object["nodes_reconciled"]; !ok {
 		t.Errorf("expected nodes_reconciled counter, got %v", object)
+	}
+}
+
+// TestKubernetesStateEndpoint verifies GET /nodes/{id}/kubernetes returns the
+// declared desired Kubernetes state and the most recent agent-reported
+// Kubernetes state.
+func TestKubernetesStateEndpoint(t *testing.T) {
+	app := newTestApp(t)
+	id := createNode(t, app)
+
+	// Declare the Kubernetes expectation via desired-state.
+	resp, body := app.request(t, http.MethodPut, "/nodes/"+id+"/desired-state",
+		map[string]any{"kubernetes": map[string]any{"enabled": true, "minimum_ready_nodes": 1}})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("setting desired state failed: %d (%v)", resp.StatusCode, body)
+	}
+
+	// Report observed Kubernetes state via the agent state endpoint.
+	report, _ := app.request(t, http.MethodPut, "/nodes/"+id+"/state", map[string]any{
+		"status": "READY",
+		"kubernetes": map[string]any{
+			"available":       true,
+			"status":          "DEGRADED",
+			"version":         "v1.31.0",
+			"node_count":      2,
+			"ready_nodes":     1,
+			"not_ready_nodes": 1,
+			"workload":        map[string]any{"total_pods": 5, "running_pods": 4, "failed_pods": 1},
+		},
+	})
+	if report.StatusCode != http.StatusOK {
+		t.Fatalf("reporting state failed: %d", report.StatusCode)
+	}
+
+	resp, body = app.request(t, http.MethodGet, "/nodes/"+id+"/kubernetes", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d (%v)", resp.StatusCode, body)
+	}
+	object := asMap(t, body)
+	desired := asMap(t, object["desired"])
+	if desired["enabled"] != true || desired["minimum_ready_nodes"] != float64(1) {
+		t.Errorf("unexpected desired kubernetes: %v", desired)
+	}
+	state := asMap(t, object["state"])
+	if state["status"] != "DEGRADED" || state["available"] != true {
+		t.Errorf("unexpected observed kubernetes: %v", state)
+	}
+	if state["node_count"] != float64(2) || state["ready_nodes"] != float64(1) {
+		t.Errorf("unexpected node counts: %v", state)
+	}
+	workload := asMap(t, state["workload"])
+	if workload["total_pods"] != float64(5) {
+		t.Errorf("unexpected workload: %v", workload)
+	}
+}
+
+// TestKubernetesListNodesDispatchesCommand verifies GET /nodes/{id}/kubernetes/nodes
+// answers 202 Accepted with a LIST_KUBERNETES_NODES command the caller can poll.
+func TestKubernetesListNodesDispatchesCommand(t *testing.T) {
+	app := newTestApp(t)
+	id := createNode(t, app)
+
+	resp, body := app.request(t, http.MethodGet, "/nodes/"+id+"/kubernetes/nodes", nil)
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d (%v)", resp.StatusCode, body)
+	}
+	command := asMap(t, body)
+	if command["type"] != "LIST_KUBERNETES_NODES" {
+		t.Errorf("expected LIST_KUBERNETES_NODES command, got %v", command["type"])
+	}
+	if command["status"] != "PENDING" {
+		t.Errorf("expected PENDING command, got %v", command["status"])
+	}
+}
+
+// TestKubernetesListPodsNamespace verifies the namespace query parameter is
+// forwarded as a command parameter.
+func TestKubernetesListPodsNamespace(t *testing.T) {
+	app := newTestApp(t)
+	id := createNode(t, app)
+
+	resp, body := app.request(t, http.MethodGet, "/nodes/"+id+"/kubernetes/pods?namespace=default", nil)
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d (%v)", resp.StatusCode, body)
+	}
+	command := asMap(t, body)
+	if command["type"] != "LIST_KUBERNETES_PODS" {
+		t.Errorf("expected LIST_KUBERNETES_PODS command, got %v", command["type"])
+	}
+	parameters := asMap(t, command["parameters"])
+	if parameters["namespace"] != "default" {
+		t.Errorf("expected namespace parameter, got %v", parameters)
+	}
+}
+
+// TestKubernetesEndpointsNotFound verifies the endpoints 404 for unknown nodes.
+func TestKubernetesEndpointsNotFound(t *testing.T) {
+	app := newTestApp(t)
+	id := "f47ac10b-58cc-4372-a567-0e02b2c3d479"
+
+	for _, path := range []string{
+		"/nodes/" + id + "/kubernetes",
+		"/nodes/" + id + "/kubernetes/nodes",
+		"/nodes/" + id + "/kubernetes/pods",
+	} {
+		resp, _ := app.request(t, http.MethodGet, path, nil)
+		if resp.StatusCode != http.StatusNotFound {
+			t.Errorf("expected 404 for %s, got %d", path, resp.StatusCode)
+		}
+	}
+}
+
+// TestReconcileKubernetesDrift implements the Phase 4 spec section 76 scenario:
+// an unhealthy Kubernetes node produces AETHER-GRID DRIFT_DETECTED with a
+// structured kubernetes difference, and restoring readiness returns IN_SYNC.
+func TestReconcileKubernetesDrift(t *testing.T) {
+	app := newTestApp(t)
+	id := createNode(t, app)
+
+	// Bring the node to READY and declare the Kubernetes expectation.
+	readyResp, _ := app.request(t, http.MethodPut, "/nodes/"+id+"/state", map[string]any{"status": "READY"})
+	if readyResp.StatusCode != http.StatusOK {
+		t.Fatalf("bringing node to READY failed: %d", readyResp.StatusCode)
+	}
+	desiredResp, _ := app.request(t, http.MethodPut, "/nodes/"+id+"/desired-state",
+		map[string]any{"status": "READY", "kubernetes": map[string]any{"enabled": true, "minimum_ready_nodes": 1}})
+	if desiredResp.StatusCode != http.StatusOK {
+		t.Fatalf("setting desired state failed: %d", desiredResp.StatusCode)
+	}
+
+	// Report a DEGRADED cluster: available but no Ready node.
+	report, _ := app.request(t, http.MethodPut, "/nodes/"+id+"/state", map[string]any{
+		"status": "READY",
+		"kubernetes": map[string]any{
+			"available":       true,
+			"status":          "DEGRADED",
+			"version":         "v1.31.0",
+			"node_count":      2,
+			"ready_nodes":     0,
+			"not_ready_nodes": 2,
+		},
+	})
+	if report.StatusCode != http.StatusOK {
+		t.Fatalf("reporting degraded kubernetes failed: %d", report.StatusCode)
+	}
+
+	reconcileResp, reconcileBody := app.request(t, http.MethodPost, "/nodes/"+id+"/reconcile", nil)
+	if reconcileResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d (%v)", reconcileResp.StatusCode, reconcileBody)
+	}
+	object := asMap(t, reconcileBody)
+	if object["result"] != "DRIFT_DETECTED" {
+		t.Fatalf("expected DRIFT_DETECTED, got %v", object["result"])
+	}
+	differences, ok := object["differences"].([]any)
+	if !ok || len(differences) != 1 {
+		t.Fatalf("expected 1 difference, got %v", object["differences"])
+	}
+	diff := asMap(t, differences[0])
+	if diff["field"] != "kubernetes.ready_nodes" {
+		t.Fatalf("expected kubernetes.ready_nodes difference, got %v", diff)
+	}
+	if diff["desired"] != float64(1) || diff["actual"] != float64(0) {
+		t.Errorf("unexpected difference values: %v", diff)
+	}
+
+	// Restore readiness: the cluster reports its Ready node again.
+	report, _ = app.request(t, http.MethodPut, "/nodes/"+id+"/state", map[string]any{
+		"status": "READY",
+		"kubernetes": map[string]any{
+			"available":       true,
+			"status":          "READY",
+			"version":         "v1.31.0",
+			"node_count":      2,
+			"ready_nodes":     2,
+			"not_ready_nodes": 0,
+		},
+	})
+	if report.StatusCode != http.StatusOK {
+		t.Fatalf("reporting restored kubernetes failed: %d", report.StatusCode)
+	}
+
+	syncResp, syncBody := app.request(t, http.MethodPost, "/nodes/"+id+"/reconcile", nil)
+	if syncResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d (%v)", syncResp.StatusCode, syncBody)
+	}
+	if asMap(t, syncBody)["result"] != "IN_SYNC" {
+		t.Errorf("expected IN_SYNC after restore, got %v", syncBody)
+	}
+}
+
+// TestReconcileKubernetesUnavailable verifies the spec section 22 scenario:
+// desired enabled while the cluster is unavailable is surfaced as a
+// kubernetes.available drift.
+func TestReconcileKubernetesUnavailable(t *testing.T) {
+	app := newTestApp(t)
+	id := createNode(t, app)
+
+	_, _ = app.request(t, http.MethodPut, "/nodes/"+id+"/state", map[string]any{"status": "READY"})
+	_, _ = app.request(t, http.MethodPut, "/nodes/"+id+"/desired-state",
+		map[string]any{"status": "READY", "kubernetes": map[string]any{"enabled": true, "minimum_ready_nodes": 1}})
+
+	report, _ := app.request(t, http.MethodPut, "/nodes/"+id+"/state", map[string]any{
+		"status": "READY",
+		"kubernetes": map[string]any{
+			"available":       false,
+			"status":          "UNAVAILABLE",
+			"node_count":      0,
+			"ready_nodes":     0,
+			"not_ready_nodes": 0,
+		},
+	})
+	if report.StatusCode != http.StatusOK {
+		t.Fatalf("reporting unavailable kubernetes failed: %d", report.StatusCode)
+	}
+
+	_, reconcileBody := app.request(t, http.MethodPost, "/nodes/"+id+"/reconcile", nil)
+	object := asMap(t, reconcileBody)
+	if object["result"] != "DRIFT_DETECTED" {
+		t.Fatalf("expected DRIFT_DETECTED, got %v", object["result"])
+	}
+	differences := object["differences"].([]any)
+	diff := asMap(t, differences[0])
+	if diff["field"] != "kubernetes.available" {
+		t.Fatalf("expected kubernetes.available difference, got %v", diff)
 	}
 }

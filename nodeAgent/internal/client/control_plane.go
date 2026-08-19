@@ -13,6 +13,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/acegobugs-cpu/AetherGrid/nodeAgent/internal/kubernetes"
 )
 
 // ErrNotFound is returned by client methods when the control plane responds
@@ -88,10 +90,14 @@ type CommandResult struct {
 
 // StateReport is the agent's reported actual state. Phase 2 restricts the
 // control-plane payload to status and IP address, matching the Phase 1 state
-// model; detailed machine state is kept locally.
+// model; detailed machine state is kept locally. Phase 4 adds the observed
+// Kubernetes summary so the control plane can detect Kubernetes drift without
+// contacting the cluster itself.
 type StateReport struct {
 	Status    string `json:"status"`
 	IPAddress string `json:"ip_address"`
+	// Kubernetes is the observed Kubernetes state. It is omitted when nil.
+	Kubernetes *kubernetes.KubernetesState `json:"kubernetes,omitempty"`
 }
 
 // ControlPlaneClient is the interface the agent depends on. It is kept small

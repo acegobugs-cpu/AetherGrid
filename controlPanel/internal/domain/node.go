@@ -61,8 +61,15 @@ type Node struct {
 	Status            NodeStatus
 	DesiredStatus     NodeStatus
 	KubernetesEnabled bool
-	WireGuardEnabled  bool
-	LastHeartbeat     *time.Time
+	// KubernetesMinimumReadyNodes is the declared minimum Ready-node count for
+	// the node's Kubernetes integration.
+	KubernetesMinimumReadyNodes int
+	WireGuardEnabled            bool
+	LastHeartbeat               *time.Time
+
+	// Kubernetes is the most recent Kubernetes state observed by the agent. It
+	// is nil until the agent reports Kubernetes state.
+	Kubernetes *KubernetesActualState
 
 	// Reconciliation metadata, updated by the reconciliation engine.
 	LastReconciliation           *time.Time
@@ -80,9 +87,12 @@ type Node struct {
 // DesiredState returns the structured desired state declared for the node.
 func (n *Node) DesiredState() DesiredState {
 	return DesiredState{
-		Status:            n.DesiredStatus,
-		KubernetesEnabled: n.KubernetesEnabled,
-		WireGuardEnabled:  n.WireGuardEnabled,
+		Status: n.DesiredStatus,
+		Kubernetes: KubernetesDesiredState{
+			Enabled:           n.KubernetesEnabled,
+			MinimumReadyNodes: n.KubernetesMinimumReadyNodes,
+		},
+		WireGuardEnabled: n.WireGuardEnabled,
 	}
 }
 
@@ -90,9 +100,9 @@ func (n *Node) DesiredState() DesiredState {
 // node. It reflects observation only and is never altered by desired state.
 func (n *Node) ActualState() ActualState {
 	return ActualState{
-		Status:            n.Status,
-		KubernetesEnabled: n.KubernetesEnabled,
-		WireGuardEnabled:  n.WireGuardEnabled,
-		LastHeartbeat:     n.LastHeartbeat,
+		Status:           n.Status,
+		Kubernetes:       n.Kubernetes,
+		WireGuardEnabled: n.WireGuardEnabled,
+		LastHeartbeat:    n.LastHeartbeat,
 	}
 }

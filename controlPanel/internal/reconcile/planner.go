@@ -40,8 +40,12 @@ type Planner interface {
 //   - A difference involving a transitional status (for example PROVISIONING
 //     while desired is READY) is expected mid-lifecycle and produces no action;
 //     the plan still reports DRIFT_DETECTED so operators can see it.
-//   - Kubernetes and WireGuard differences are recognized but cannot be acted
-//     on yet; the executor rejects them explicitly.
+//   - Kubernetes differences (kubernetes.available, kubernetes.ready_nodes)
+//     indicate the cluster is not meeting the declared expectation. There is no
+//     executable remediation path in Phase 4, so no action is planned and the
+//     difference is surfaced as DRIFT_DETECTED.
+//   - WireGuard differences are recognized but cannot be acted on yet; the
+//     executor rejects them explicitly.
 type ReconciliationPlanner struct{}
 
 // NewReconciliationPlanner constructs a planner.

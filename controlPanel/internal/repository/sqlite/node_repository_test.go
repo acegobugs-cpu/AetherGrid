@@ -134,6 +134,93 @@ func TestRepositoryUpdateMissing(t *testing.T) {
 	}
 }
 
+// TestRepositoryKubernetesRoundTrip verifies the Phase 4 Kubernetes columns are
+// persisted and restored through Create, Update and Get.
+func TestRepositoryKubernetesRoundTrip(t *testing.T) {
+	repo := newTestRepository(t)
+	ctx := context.Background()
+
+	node := sampleNode(t)
+	node.KubernetesEnabled = true
+	node.KubernetesMinimumReadyNodes = 2
+	reported := time.Now().UTC().Truncate(time.Microsecond)
+	node.Kubernetes = &domain.KubernetesActualState{
+		Available:     true,
+		Status:        domain.KubernetesDegraded,
+		Version:       "v1.31.0",
+		NodeCount:     3,
+		ReadyNodes:    2,
+		NotReadyNodes: 1,
+		Workload: domain.WorkloadSummary{
+			TotalPods:   10,
+			RunningPods: 8,
+			FailedPods:  2,
+		},
+		ReportedAt: reported,
+	}
+	if err := repo.Create(ctx, node); err != nil {
+		t.Fatalf("create failed: %v", err)
+	}
+
+	got, err := repo.GetByID(ctx, node.ID)
+	if err != nil {
+		t.Fatalf("get failed: %v", err)
+	}
+	if got.Kubernetes == nil {
+		t.Fatal("expected kubernetes state to be restored")
+	}
+	if got.Kubernetes.Status != domain.KubernetesDegraded || !got.Kubernetes.Available {
+		t.Errorf("unexpected kubernetes state: %+v", got.Kubernetes)
+	}
+	if got.Kubernetes.ReadyNodes != 2 || got.Kubernetes.NotReadyNodes != 1 || got.Kubernetes.NodeCount != 3 {
+		t.Errorf("unexpected node counts: %+v", got.Kubernetes)
+	}
+	if got.Kubernetes.Workload.TotalPods != 10 || got.Kubernetes.Workload.RunningPods != 8 || got.Kubernetes.Workload.FailedPods != 2 {
+		t.Errorf("unexpected workload: %+v", got.Kubernetes.Workload)
+	}
+	if !got.Kubernetes.ReportedAt.Equal(reported) {
+		t.Errorf("expected reported_at %v, got %v", reported, got.Kubernetes.ReportedAt)
+	}
+	if got.KubernetesMinimumReadyNodes != 2 {
+		t.Errorf("expected kubernetes_minimum_ready_nodes 2, got %d", got.KubernetesMinimumReadyNodes)
+	}
+
+	// Update the observed state and re-read.
+	got.Kubernetes.Status = domain.KubernetesReady
+	got.Kubernetes.ReadyNodes = 3
+	got.Kubernetes.NotReadyNodes = 0
+	if err := repo.Update(ctx, got); err != nil {
+		t.Fatalf("update failed: %v", err)
+	}
+	after, err := repo.GetByID(ctx, node.ID)
+	if err != nil {
+		t.Fatalf("get after update failed: %v", err)
+	}
+	if after.Kubernetes.Status != domain.KubernetesReady || after.Kubernetes.ReadyNodes != 3 || after.Kubernetes.NotReadyNodes != 0 {
+		t.Errorf("expected updated kubernetes state, got %+v", after.Kubernetes)
+	}
+}
+
+// TestRepositoryKubernetesNilState stores a nil observed state and restores nil.
+func TestRepositoryKubernetesNilState(t *testing.T) {
+	repo := newTestRepository(t)
+	ctx := context.Background()
+
+	node := sampleNode(t)
+	node.KubernetesEnabled = true
+	if err := repo.Create(ctx, node); err != nil {
+		t.Fatalf("create failed: %v", err)
+	}
+
+	got, err := repo.GetByID(ctx, node.ID)
+	if err != nil {
+		t.Fatalf("get failed: %v", err)
+	}
+	if got.Kubernetes != nil {
+		t.Fatalf("expected nil kubernetes state, got %+v", got.Kubernetes)
+	}
+}
+
 func TestRepositoryList(t *testing.T) {
 	repo := newTestRepository(t)
 	ctx := context.Background()

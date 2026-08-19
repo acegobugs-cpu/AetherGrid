@@ -60,6 +60,8 @@ type stateReport struct {
 	NodeID string
 	Status string
 	IP     string
+	// Kubernetes is the observed Kubernetes summary sent by the agent.
+	Kubernetes map[string]any
 }
 
 type pendingCommand struct {
@@ -269,8 +271,9 @@ func (m *mockControlPlane) handleHeartbeat(w http.ResponseWriter, r *http.Reques
 func (m *mockControlPlane) handleReportState(w http.ResponseWriter, r *http.Request) {
 	nodeID := pathOf(r.URL.Path, 2)
 	var report struct {
-		Status    string `json:"status"`
-		IPAddress string `json:"ip_address"`
+		Status     string         `json:"status"`
+		IPAddress  string         `json:"ip_address"`
+		Kubernetes map[string]any `json:"kubernetes"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&report); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid state payload")
@@ -282,7 +285,7 @@ func (m *mockControlPlane) handleReportState(w http.ResponseWriter, r *http.Requ
 		writeError(w, http.StatusNotFound, "node not found")
 		return
 	}
-	m.stateReports = append(m.stateReports, stateReport{NodeID: nodeID, Status: report.Status, IP: report.IPAddress})
+	m.stateReports = append(m.stateReports, stateReport{NodeID: nodeID, Status: report.Status, IP: report.IPAddress, Kubernetes: report.Kubernetes})
 	m.mu.Unlock()
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -482,6 +485,15 @@ func TestIntegrationFullLifecycle(t *testing.T) {
 	waitFor(t, "registration", func() bool { return mock.nodeCount() == 1 })
 	waitFor(t, "heartbeats", func() bool { return mock.heartbeatCount(mock.nodeID()) >= 2 })
 	waitFor(t, "state reports", func() bool { return mock.stateReportCount() >= 1 })
+
+	// Phase 4: the actual-state report carries the observed Kubernetes state.
+	report := mock.stateReports[len(mock.stateReports)-1]
+	if report.Kubernetes == nil {
+		t.Fatal("expected kubernetes state in the state report")
+	}
+	if report.Kubernetes["status"] != "DISABLED" {
+		t.Errorf("expected kubernetes DISABLED (default config), got %v", report.Kubernetes["status"])
+	}
 
 	nodeID := mock.nodeID()
 	identityFile := filepath.Join(cfg.DataDir, "node-id")

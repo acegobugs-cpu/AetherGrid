@@ -130,7 +130,7 @@ func TestControlPlaneLifecycle(t *testing.T) {
 		"name":               "edge-01",
 		"location":           "addis-01",
 		"ip_address":         "10.0.0.10",
-		"kubernetes_enabled": true,
+		"kubernetes_enabled": false,
 		"wireguard_enabled":  true,
 	})
 	if createResp.StatusCode != http.StatusCreated {

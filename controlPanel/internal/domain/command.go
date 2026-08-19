@@ -47,6 +47,21 @@ const (
 	// CommandRestartAgent asks an agent to restart itself (its supervisor
 	// brings it back). The reconciliation engine uses it for node recovery.
 	CommandRestartAgent = "RESTART_AGENT"
+	// CommandGetKubernetesStatus asks an agent to report its observed
+	// Kubernetes integration state.
+	CommandGetKubernetesStatus = "GET_KUBERNETES_STATUS"
+	// CommandListKubernetesNodes asks an agent to list the nodes of its
+	// Kubernetes cluster.
+	CommandListKubernetesNodes = "LIST_KUBERNETES_NODES"
+	// CommandListKubernetesPods asks an agent to list the pods of its
+	// Kubernetes cluster (optionally filtered by namespace).
+	CommandListKubernetesPods = "LIST_KUBERNETES_PODS"
+	// CommandCreateTestNamespace asks an agent to create a dedicated test
+	// namespace in its Kubernetes cluster.
+	CommandCreateTestNamespace = "CREATE_TEST_NAMESPACE"
+	// CommandDeleteTestNamespace asks an agent to delete a dedicated test
+	// namespace from its Kubernetes cluster.
+	CommandDeleteTestNamespace = "DELETE_TEST_NAMESPACE"
 )
 
 // Command is the domain model for an instruction the control plane sends to

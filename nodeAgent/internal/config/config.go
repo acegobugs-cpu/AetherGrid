@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -39,6 +40,16 @@ type Config struct {
 	ListenAddr string
 	// Version is the build version reported in state and status.
 	Version string
+	// KubernetesEnabled turns Kubernetes integration on. When false the agent
+	// operates normally and reports Kubernetes as DISABLED.
+	KubernetesEnabled bool
+	// Kubeconfig is an explicit path to a kubeconfig file. When empty the
+	// standard kubeconfig loading rules (KUBECONFIG, ~/.kube/config) and
+	// in-cluster configuration are used.
+	Kubeconfig string
+	// KubernetesRequestTimeout bounds every Kubernetes API call so an
+	// unavailable cluster cannot block the agent.
+	KubernetesRequestTimeout time.Duration
 }
 
 // Defaults used when the corresponding environment variable is not set.
@@ -54,25 +65,29 @@ const (
 	defaultMaxBackoff        = 30 * time.Second
 	defaultListenAddr        = "127.0.0.1:9090"
 	defaultVersion           = "dev"
+	defaultKubernetesTimeout = 10 * time.Second
 )
 
 // FromEnv builds a Config from environment variables, falling back to
 // sensible local-development defaults when variables are not set.
 func FromEnv() Config {
 	return Config{
-		ControlPlaneURL:     envOr("CONTROL_PLANE_URL", defaultControlPlaneURL),
-		NodeName:            envOr("NODE_NAME", defaultHostname()),
-		NodeLocation:        envOr("NODE_LOCATION", defaultNodeLocation),
-		NodeID:              os.Getenv("NODE_ID"),
-		DataDir:             envOr("AGENT_DATA_DIR", defaultDataDir),
-		HeartbeatInterval:   durationEnvOr("HEARTBEAT_INTERVAL", defaultHeartbeatInterval),
-		StateReportInterval: durationEnvOr("STATE_REPORT_INTERVAL", defaultStateInterval),
-		CommandPollInterval: durationEnvOr("COMMAND_POLL_INTERVAL", defaultCommandInterval),
-		CommandTimeout:      durationEnvOr("COMMAND_TIMEOUT", defaultCommandTimeout),
-		InitialBackoff:      durationEnvOr("RETRY_INITIAL_BACKOFF", defaultInitialBackoff),
-		MaxBackoff:          durationEnvOr("RETRY_MAX_BACKOFF", defaultMaxBackoff),
-		ListenAddr:          envOr("AGENT_LISTEN_ADDR", defaultListenAddr),
-		Version:             envOr("AGENT_VERSION", defaultVersion),
+		ControlPlaneURL:          envOr("CONTROL_PLANE_URL", defaultControlPlaneURL),
+		NodeName:                 envOr("NODE_NAME", defaultHostname()),
+		NodeLocation:             envOr("NODE_LOCATION", defaultNodeLocation),
+		NodeID:                   os.Getenv("NODE_ID"),
+		DataDir:                  envOr("AGENT_DATA_DIR", defaultDataDir),
+		HeartbeatInterval:        durationEnvOr("HEARTBEAT_INTERVAL", defaultHeartbeatInterval),
+		StateReportInterval:      durationEnvOr("STATE_REPORT_INTERVAL", defaultStateInterval),
+		CommandPollInterval:      durationEnvOr("COMMAND_POLL_INTERVAL", defaultCommandInterval),
+		CommandTimeout:           durationEnvOr("COMMAND_TIMEOUT", defaultCommandTimeout),
+		InitialBackoff:           durationEnvOr("RETRY_INITIAL_BACKOFF", defaultInitialBackoff),
+		MaxBackoff:               durationEnvOr("RETRY_MAX_BACKOFF", defaultMaxBackoff),
+		ListenAddr:               envOr("AGENT_LISTEN_ADDR", defaultListenAddr),
+		Version:                  envOr("AGENT_VERSION", defaultVersion),
+		KubernetesEnabled:        envBoolOr("KUBERNETES_ENABLED", false),
+		Kubeconfig:               os.Getenv("KUBECONFIG"),
+		KubernetesRequestTimeout: durationEnvOr("KUBERNETES_REQUEST_TIMEOUT", defaultKubernetesTimeout),
 	}
 }
 
@@ -119,6 +134,9 @@ func (c Config) Validate() error {
 	if strings.TrimSpace(c.ListenAddr) == "" {
 		return fmt.Errorf("AGENT_LISTEN_ADDR is required")
 	}
+	if c.KubernetesRequestTimeout <= 0 {
+		return fmt.Errorf("KUBERNETES_REQUEST_TIMEOUT must be positive")
+	}
 	return nil
 }
 
@@ -132,6 +150,15 @@ func envOr(key, fallback string) string {
 func durationEnvOr(key string, fallback time.Duration) time.Duration {
 	if value := os.Getenv(key); value != "" {
 		if parsed, err := time.ParseDuration(value); err == nil {
+			return parsed
+		}
+	}
+	return fallback
+}
+
+func envBoolOr(key string, fallback bool) bool {
+	if value := os.Getenv(key); value != "" {
+		if parsed, err := strconv.ParseBool(value); err == nil {
 			return parsed
 		}
 	}

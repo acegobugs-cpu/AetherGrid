@@ -22,6 +22,7 @@ func NewRouter(
 	nodeHandler := handlers.NewNodeHandler(nodes, heartbeats, logger)
 	commandHandler := handlers.NewCommandHandler(commands, logger)
 	reconciliationHandler := handlers.NewReconciliationHandler(reconciler, logger)
+	kubernetesHandler := handlers.NewKubernetesHandler(nodes, commands, logger)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /nodes", nodeHandler.Create)
@@ -35,6 +36,10 @@ func NewRouter(
 	mux.HandleFunc("PUT /nodes/{id}/state", nodeHandler.SetState)
 	mux.HandleFunc("GET /nodes/{id}/desired-state", nodeHandler.DesiredState)
 	mux.HandleFunc("PUT /nodes/{id}/desired-state", nodeHandler.SetDesiredState)
+
+	mux.HandleFunc("GET /nodes/{id}/kubernetes", kubernetesHandler.State)
+	mux.HandleFunc("GET /nodes/{id}/kubernetes/nodes", kubernetesHandler.ListNodes)
+	mux.HandleFunc("GET /nodes/{id}/kubernetes/pods", kubernetesHandler.ListPods)
 
 	mux.HandleFunc("POST /nodes/{id}/reconcile", reconciliationHandler.Reconcile)
 	mux.HandleFunc("GET /nodes/{id}/reconciliation", reconciliationHandler.State)

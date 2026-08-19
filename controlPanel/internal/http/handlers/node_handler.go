@@ -164,13 +164,13 @@ func (h *NodeHandler) SetState(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	node, err := h.nodes.UpdateStatus(r.Context(), id, status, request.IPAddress)
+	node, err := h.nodes.UpdateStatus(r.Context(), id, status, request.IPAddress, request.Kubernetes)
 	if err != nil {
 		h.writeServiceError(w, err, "recording node state")
 		return
 	}
 
-	h.logger.Printf("state reported: id=%s status=%s ip=%s", id, node.Status, node.IPAddress)
+	h.logger.Printf("state reported: id=%s status=%s ip=%s kubernetes=%v", id, node.Status, node.IPAddress, kubernetesSummary(node.Kubernetes))
 	writeJSON(w, http.StatusOK, stateResponse{
 		NodeID:        node.ID,
 		Status:        string(node.Status),
@@ -211,18 +211,37 @@ func (h *NodeHandler) SetDesiredState(w http.ResponseWriter, r *http.Request) {
 	}
 
 	status := domain.NodeStatus(strings.TrimSpace(strings.ToUpper(request.Status)))
-	if !status.Valid() {
+	if status != "" && !status.Valid() {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid status %q", request.Status))
 		return
 	}
+	if request.Kubernetes != nil && request.Kubernetes.MinimumReadyNodes < 0 {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid kubernetes.minimum_ready_nodes %d", request.Kubernetes.MinimumReadyNodes))
+		return
+	}
 
-	node, err := h.nodes.SetDesiredStatus(r.Context(), id, status)
+	// Merge the declared fields over the current desired state so a partial
+	// update never clobbers fields the client did not provide.
+	current, err := h.nodes.Get(r.Context(), id)
+	if err != nil {
+		h.writeServiceError(w, err, "setting desired state")
+		return
+	}
+	desired := current.DesiredState()
+	if status != "" {
+		desired.Status = status
+	}
+	if request.Kubernetes != nil {
+		desired.Kubernetes = *request.Kubernetes
+	}
+
+	node, err := h.nodes.SetDesiredState(r.Context(), id, desired)
 	if err != nil {
 		h.writeServiceError(w, err, "setting desired state")
 		return
 	}
 
-	h.logger.Printf("desired state updated: id=%s desired_status=%s", id, node.DesiredStatus)
+	h.logger.Printf("desired state updated: id=%s desired_status=%s kubernetes_enabled=%v", id, node.DesiredStatus, node.KubernetesEnabled)
 	writeJSON(w, http.StatusOK, desiredStateResponse{
 		NodeID:        node.ID,
 		DesiredStatus: string(node.DesiredStatus),
@@ -286,6 +305,15 @@ func formatTime(value *time.Time) *string {
 	return &formatted
 }
 
+// kubernetesSummary is a terse one-line description of a node's observed
+// Kubernetes state, used for log lines and never containing credentials.
+func kubernetesSummary(state *domain.KubernetesActualState) string {
+	if state == nil {
+		return "none"
+	}
+	return fmt.Sprintf("%s available=%v nodes=%d ready=%d", state.Status, state.Available, state.NodeCount, state.ReadyNodes)
+}
+
 // createNodeRequest is the JSON payload for POST /nodes.
 type createNodeRequest struct {
 	Name              string `json:"name"`
@@ -296,14 +324,18 @@ type createNodeRequest struct {
 }
 
 // setDesiredStateRequest is the JSON payload for PUT /nodes/{id}/desired-state.
+// Declared fields are merged over the current desired state so partial updates
+// are safe.
 type setDesiredStateRequest struct {
-	Status string `json:"status"`
+	Status     string                         `json:"status"`
+	Kubernetes *domain.KubernetesDesiredState `json:"kubernetes"`
 }
 
 // setStateRequest is the JSON payload for PUT /nodes/{id}/state.
 type setStateRequest struct {
-	Status    string `json:"status"`
-	IPAddress string `json:"ip_address"`
+	Status     string                        `json:"status"`
+	IPAddress  string                        `json:"ip_address"`
+	Kubernetes *domain.KubernetesActualState `json:"kubernetes"`
 }
 
 // nodeResponse is the JSON representation of a node.

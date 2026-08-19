@@ -154,7 +154,7 @@ func TestNodeServiceUpdateStatus(t *testing.T) {
 		t.Fatalf("create failed: %v", err)
 	}
 
-	updated, err := svc.UpdateStatus(context.Background(), node.ID, domain.StatusReady, "10.0.0.20")
+	updated, err := svc.UpdateStatus(context.Background(), node.ID, domain.StatusReady, "10.0.0.20", nil)
 	if err != nil {
 		t.Fatalf("update status failed: %v", err)
 	}
@@ -171,13 +171,13 @@ func TestNodeServiceUpdateStatus(t *testing.T) {
 		t.Errorf("state report must not change desired state, got %q", updated.DesiredStatus)
 	}
 
-	_, err = svc.UpdateStatus(context.Background(), node.ID, domain.NodeStatus("BOGUS"), "")
+	_, err = svc.UpdateStatus(context.Background(), node.ID, domain.NodeStatus("BOGUS"), "", nil)
 	var validation *ValidationError
 	if !errors.As(err, &validation) {
 		t.Fatalf("expected ValidationError for bogus status, got %v", err)
 	}
 
-	_, err = svc.UpdateStatus(context.Background(), node.ID, domain.StatusReady, "not-an-ip")
+	_, err = svc.UpdateStatus(context.Background(), node.ID, domain.StatusReady, "not-an-ip", nil)
 	var validationIP *ValidationError
 	if !errors.As(err, &validationIP) {
 		t.Fatalf("expected ValidationError for invalid ip, got %v", err)
@@ -187,9 +187,67 @@ func TestNodeServiceUpdateStatus(t *testing.T) {
 func TestNodeServiceUpdateStatusNotFound(t *testing.T) {
 	svc := NewNodeService(newMockNodeRepository())
 
-	_, err := svc.UpdateStatus(context.Background(), "missing", domain.StatusReady, "")
+	_, err := svc.UpdateStatus(context.Background(), "missing", domain.StatusReady, "", nil)
 	if !IsNotFound(err) {
 		t.Fatalf("expected not found, got %v", err)
+	}
+}
+
+func TestNodeServiceUpdateStatusKubernetes(t *testing.T) {
+	svc := NewNodeService(newMockNodeRepository())
+
+	node, err := svc.Create(context.Background(), CreateNodeInput{Name: "edge-01"})
+	if err != nil {
+		t.Fatalf("create failed: %v", err)
+	}
+
+	reported := &domain.KubernetesActualState{
+		Available:     true,
+		Status:        domain.KubernetesReady,
+		Version:       "v1.31.0",
+		NodeCount:     1,
+		ReadyNodes:    1,
+		NotReadyNodes: 0,
+	}
+	updated, err := svc.UpdateStatus(context.Background(), node.ID, domain.StatusReady, "", reported)
+	if err != nil {
+		t.Fatalf("update status failed: %v", err)
+	}
+	if updated.Kubernetes == nil || updated.Kubernetes.Status != domain.KubernetesReady {
+		t.Fatalf("expected reported kubernetes state to be stored, got %+v", updated.Kubernetes)
+	}
+	if updated.Kubernetes.ReportedAt.IsZero() {
+		t.Error("expected reported_at to be stamped by the service")
+	}
+}
+
+func TestNodeServiceSetDesiredStateKubernetes(t *testing.T) {
+	svc := NewNodeService(newMockNodeRepository())
+
+	node, err := svc.Create(context.Background(), CreateNodeInput{Name: "edge-01"})
+	if err != nil {
+		t.Fatalf("create failed: %v", err)
+	}
+
+	updated, err := svc.SetDesiredState(context.Background(), node.ID, domain.DesiredState{
+		Kubernetes: domain.KubernetesDesiredState{
+			Enabled:           true,
+			MinimumReadyNodes: 2,
+		},
+	})
+	if err != nil {
+		t.Fatalf("set desired state failed: %v", err)
+	}
+	if !updated.KubernetesEnabled || updated.KubernetesMinimumReadyNodes != 2 {
+		t.Errorf("expected kubernetes desired state stored, got enabled=%v min=%d", updated.KubernetesEnabled, updated.KubernetesMinimumReadyNodes)
+	}
+
+	_, err = svc.SetDesiredState(context.Background(), node.ID, domain.DesiredState{
+		Kubernetes: domain.KubernetesDesiredState{Enabled: true, MinimumReadyNodes: -1},
+	})
+	var validation *ValidationError
+	if !errors.As(err, &validation) {
+		t.Fatalf("expected ValidationError for negative minimum_ready_nodes, got %v", err)
 	}
 }
 

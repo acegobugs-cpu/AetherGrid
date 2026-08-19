@@ -103,6 +103,14 @@ func (a *Agent) handleStatus(w http.ResponseWriter, _ *http.Request) {
 		"last_sync":    formatTime(a.lastSync),
 		"last_state":   a.lastState,
 		"last_desired": lastDesired,
+		"kubernetes": map[string]any{
+			"available":       a.lastK8s.Available,
+			"status":          a.lastK8s.Status,
+			"version":         a.lastK8s.Version,
+			"node_count":      a.lastK8s.NodeCount,
+			"ready_nodes":     a.lastK8s.ReadyNodes,
+			"not_ready_nodes": a.lastK8s.NotReadyNodes,
+		},
 	})
 }
 

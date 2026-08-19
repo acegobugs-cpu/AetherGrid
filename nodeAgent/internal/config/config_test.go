@@ -43,6 +43,15 @@ func TestFromEnvDefaults(t *testing.T) {
 	if cfg.Version != "dev" {
 		t.Errorf("expected default version dev, got %q", cfg.Version)
 	}
+	if cfg.KubernetesEnabled {
+		t.Error("expected kubernetes disabled by default")
+	}
+	if cfg.Kubeconfig != "" {
+		t.Errorf("expected empty default kubeconfig, got %q", cfg.Kubeconfig)
+	}
+	if cfg.KubernetesRequestTimeout != 10*time.Second {
+		t.Errorf("expected default kubernetes request timeout 10s, got %v", cfg.KubernetesRequestTimeout)
+	}
 }
 
 func TestFromEnvOverrides(t *testing.T) {
@@ -59,6 +68,9 @@ func TestFromEnvOverrides(t *testing.T) {
 	t.Setenv("RETRY_MAX_BACKOFF", "5s")
 	t.Setenv("AGENT_LISTEN_ADDR", "127.0.0.1:9999")
 	t.Setenv("AGENT_VERSION", "test")
+	t.Setenv("KUBERNETES_ENABLED", "true")
+	t.Setenv("KUBECONFIG", "/etc/aether-grid/kubeconfig")
+	t.Setenv("KUBERNETES_REQUEST_TIMEOUT", "15s")
 
 	cfg := FromEnv()
 	if cfg.ControlPlaneURL != "http://127.0.0.1:9000" {
@@ -97,20 +109,30 @@ func TestFromEnvOverrides(t *testing.T) {
 	if cfg.Version != "test" {
 		t.Errorf("expected version test, got %q", cfg.Version)
 	}
+	if !cfg.KubernetesEnabled {
+		t.Error("expected kubernetes enabled, got false")
+	}
+	if cfg.Kubeconfig != "/etc/aether-grid/kubeconfig" {
+		t.Errorf("expected overridden kubeconfig, got %q", cfg.Kubeconfig)
+	}
+	if cfg.KubernetesRequestTimeout != 15*time.Second {
+		t.Errorf("expected kubernetes request timeout 15s, got %v", cfg.KubernetesRequestTimeout)
+	}
 }
 
 func TestValidate(t *testing.T) {
 	valid := Config{
-		ControlPlaneURL:     "http://localhost:8080",
-		NodeName:            "edge-01",
-		DataDir:             "./data",
-		HeartbeatInterval:   10 * time.Second,
-		StateReportInterval: 30 * time.Second,
-		CommandPollInterval: 5 * time.Second,
-		CommandTimeout:      30 * time.Second,
-		InitialBackoff:      1 * time.Second,
-		MaxBackoff:          30 * time.Second,
-		ListenAddr:          "127.0.0.1:9090",
+		ControlPlaneURL:          "http://localhost:8080",
+		NodeName:                 "edge-01",
+		DataDir:                  "./data",
+		HeartbeatInterval:        10 * time.Second,
+		StateReportInterval:      30 * time.Second,
+		CommandPollInterval:      5 * time.Second,
+		CommandTimeout:           30 * time.Second,
+		InitialBackoff:           1 * time.Second,
+		MaxBackoff:               30 * time.Second,
+		ListenAddr:               "127.0.0.1:9090",
+		KubernetesRequestTimeout: 10 * time.Second,
 	}
 	if err := valid.Validate(); err != nil {
 		t.Fatalf("expected valid config, got %v", err)
@@ -132,6 +154,7 @@ func TestValidate(t *testing.T) {
 		{"zero initial backoff", func(c *Config) { c.InitialBackoff = 0 }},
 		{"max below initial", func(c *Config) { c.MaxBackoff = 1; c.InitialBackoff = 2 }},
 		{"empty listen addr", func(c *Config) { c.ListenAddr = "" }},
+		{"zero kubernetes timeout", func(c *Config) { c.KubernetesRequestTimeout = 0 }},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

@@ -101,9 +101,10 @@ func (s *NodeService) Delete(ctx context.Context, id string) error {
 }
 
 // UpdateStatus records agent-reported actual state for a node. It updates the
-// node's observed status and, when provided, its IP address, and refreshes the
-// heartbeat timestamp since a state report also proves liveness.
-func (s *NodeService) UpdateStatus(ctx context.Context, id string, status domain.NodeStatus, ipAddress string) (*domain.Node, error) {
+// node's observed status and, when provided, its IP address and observed
+// Kubernetes state, and refreshes the heartbeat timestamp since a state report
+// also proves liveness.
+func (s *NodeService) UpdateStatus(ctx context.Context, id string, status domain.NodeStatus, ipAddress string, kubernetes *domain.KubernetesActualState) (*domain.Node, error) {
 	if !status.Valid() {
 		return nil, &ValidationError{Message: fmt.Sprintf("invalid status %q", status)}
 	}
@@ -122,6 +123,10 @@ func (s *NodeService) UpdateStatus(ctx context.Context, id string, status domain
 			return nil, &ValidationError{Message: fmt.Sprintf("invalid ip_address %q", ip)}
 		}
 		node.IPAddress = ip
+	}
+	if kubernetes != nil {
+		kubernetes.ReportedAt = now
+		node.Kubernetes = kubernetes
 	}
 
 	if err := s.repo.Update(ctx, node); err != nil {
@@ -171,7 +176,11 @@ func (s *NodeService) SetDesiredState(ctx context.Context, id string, desired do
 		}
 		node.DesiredStatus = desired.Status
 	}
-	node.KubernetesEnabled = desired.KubernetesEnabled
+	if desired.Kubernetes.MinimumReadyNodes < 0 {
+		return nil, &ValidationError{Message: fmt.Sprintf("invalid kubernetes.minimum_ready_nodes %d", desired.Kubernetes.MinimumReadyNodes)}
+	}
+	node.KubernetesEnabled = desired.Kubernetes.Enabled
+	node.KubernetesMinimumReadyNodes = desired.Kubernetes.MinimumReadyNodes
 	node.WireGuardEnabled = desired.WireGuardEnabled
 	node.UpdatedAt = time.Now().UTC()
 

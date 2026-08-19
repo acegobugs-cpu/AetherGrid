@@ -12,6 +12,7 @@ import (
 
 	"github.com/acegobugs-cpu/AetherGrid/nodeAgent/internal/client"
 	"github.com/acegobugs-cpu/AetherGrid/nodeAgent/internal/config"
+	"github.com/acegobugs-cpu/AetherGrid/nodeAgent/internal/kubernetes"
 	"github.com/acegobugs-cpu/AetherGrid/nodeAgent/internal/state"
 )
 
@@ -20,6 +21,7 @@ type fakeClient struct {
 	mu sync.Mutex
 
 	registerCalls   int
+	registerInput   client.RegisterInput
 	registerResult  client.RegisterResult
 	registerErr     error
 	heartbeats      int
@@ -49,10 +51,11 @@ func newFakeClient() *fakeClient {
 	}
 }
 
-func (f *fakeClient) Register(_ context.Context, _ client.RegisterInput) (client.RegisterResult, error) {
+func (f *fakeClient) Register(_ context.Context, input client.RegisterInput) (client.RegisterResult, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.registerCalls++
+	f.registerInput = input
 	return f.registerResult, f.registerErr
 }
 
@@ -252,6 +255,62 @@ func TestAgentReportsStateAndRetrievesDesired(t *testing.T) {
 	report := fake.stateReports[len(fake.stateReports)-1]
 	if report.Status != "READY" {
 		t.Errorf("expected reported status READY, got %q", report.Status)
+	}
+
+	cancel()
+	<-done
+}
+
+// TestAgentKubernetesStateReporting verifies the Phase 4 integration between
+// the agent runtime and the Kubernetes collector: the observed Kubernetes
+// state is included in the actual-state report, and Kubernetes-disabled agents
+// report DISABLED rather than failing.
+func TestAgentKubernetesStateReporting(t *testing.T) {
+	fake := newFakeClient()
+	cfg := testConfig(t, t.TempDir())
+	cfg.KubernetesEnabled = true
+	cfg.KubernetesRequestTimeout = time.Second
+	a := newTestAgent(t, cfg, fake)
+
+	cancel, done := runAgent(t, a)
+	defer cancel()
+
+	waitFor(t, "registration", func() bool { return fake.registerCount() >= 1 })
+	if !fake.registerInput.KubernetesEnabled {
+		t.Error("expected registration to carry KubernetesEnabled=true")
+	}
+	waitFor(t, "state reports", func() bool { return fake.reportCount() >= 1 })
+
+	report := fake.stateReports[len(fake.stateReports)-1]
+	if report.Kubernetes == nil {
+		t.Fatal("expected kubernetes state in the state report")
+	}
+	if report.Kubernetes.Status != kubernetes.KubernetesStatusUnavailable {
+		t.Errorf("expected UNAVAILABLE (no cluster in test), got %s", report.Kubernetes.Status)
+	}
+	if report.Kubernetes.Available {
+		t.Error("expected kubernetes to be unavailable")
+	}
+
+	cancel()
+	<-done
+}
+
+// TestAgentKubernetesDisabled reports DISABLED without failing.
+func TestAgentKubernetesDisabled(t *testing.T) {
+	fake := newFakeClient()
+	a := newTestAgent(t, testConfig(t, t.TempDir()), fake)
+
+	cancel, done := runAgent(t, a)
+	defer cancel()
+
+	waitFor(t, "state reports", func() bool { return fake.reportCount() >= 1 })
+	report := fake.stateReports[len(fake.stateReports)-1]
+	if report.Kubernetes == nil {
+		t.Fatal("expected kubernetes state in the state report")
+	}
+	if report.Kubernetes.Status != kubernetes.KubernetesStatusDisabled {
+		t.Errorf("expected DISABLED, got %s", report.Kubernetes.Status)
 	}
 
 	cancel()

@@ -632,6 +632,91 @@ func TestPlannerRecoverNode(t *testing.T) {
 	}
 }
 
+// TestPlannerKubernetesDrift — Kubernetes drift is surfaced as a structured
+// difference but produces no executable action in Phase 4 (DRIFT_DETECTED).
+func TestPlannerKubernetesDrift(t *testing.T) {
+	planner := NewReconciliationPlanner()
+	plan, err := planner.Plan(context.Background(), Strategy{
+		NodeID: "edge-01",
+		Desired: domain.DesiredState{
+			Status: domain.StatusReady,
+			Kubernetes: domain.KubernetesDesiredState{
+				Enabled:           true,
+				MinimumReadyNodes: 1,
+			},
+		},
+		Actual: domain.ActualState{
+			Status: domain.StatusReady,
+			Kubernetes: &domain.KubernetesActualState{
+				Available:  true,
+				Status:     domain.KubernetesDegraded,
+				ReadyNodes: 0,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("plan failed: %v", err)
+	}
+	if len(plan.Differences) != 1 || plan.Differences[0].Field != domain.FieldKubernetesReadyNodes {
+		t.Fatalf("expected kubernetes.ready_nodes difference, got %v", plan.Differences)
+	}
+	if plan.Action != "" {
+		t.Errorf("expected no corrective action for Kubernetes drift, got %q", plan.Action)
+	}
+	if plan.NeedsAction() {
+		t.Error("expected plan not to need an action")
+	}
+}
+
+// TestPlannerKubernetesUnavailable — an unavailable cluster with an enabled
+// Kubernetes expectation is surfaced as kubernetes.available drift.
+func TestPlannerKubernetesUnavailable(t *testing.T) {
+	planner := NewReconciliationPlanner()
+	plan, err := planner.Plan(context.Background(), Strategy{
+		NodeID: "edge-01",
+		Desired: domain.DesiredState{
+			Status: domain.StatusReady,
+			Kubernetes: domain.KubernetesDesiredState{
+				Enabled:           true,
+				MinimumReadyNodes: 1,
+			},
+		},
+		Actual: domain.ActualState{
+			Status:     domain.StatusReady,
+			Kubernetes: &domain.KubernetesActualState{Available: false, Status: domain.KubernetesUnavailable},
+		},
+	})
+	if err != nil {
+		t.Fatalf("plan failed: %v", err)
+	}
+	if len(plan.Differences) != 1 || plan.Differences[0].Field != domain.FieldKubernetesAvailable {
+		t.Fatalf("expected kubernetes.available difference, got %v", plan.Differences)
+	}
+	if plan.Action != "" {
+		t.Errorf("expected no corrective action, got %q", plan.Action)
+	}
+}
+
+// TestPlannerKubernetesDesiredDisabled — Kubernetes is not enforced when not
+// desired, even if the observed cluster is unavailable.
+func TestPlannerKubernetesDesiredDisabled(t *testing.T) {
+	planner := NewReconciliationPlanner()
+	plan, err := planner.Plan(context.Background(), Strategy{
+		NodeID:  "edge-01",
+		Desired: domain.DesiredState{Status: domain.StatusReady},
+		Actual: domain.ActualState{
+			Status:     domain.StatusReady,
+			Kubernetes: &domain.KubernetesActualState{Available: false, Status: domain.KubernetesUnavailable},
+		},
+	})
+	if err != nil {
+		t.Fatalf("plan failed: %v", err)
+	}
+	if len(plan.Differences) != 0 {
+		t.Fatalf("expected no differences when Kubernetes is not desired, got %v", plan.Differences)
+	}
+}
+
 // TestObserverStaleness — the observer flags stale heartbeats.
 func TestObserverStaleness(t *testing.T) {
 	repo := newFakeNodeRepo()

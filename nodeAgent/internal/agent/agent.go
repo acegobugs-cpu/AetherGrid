@@ -19,6 +19,7 @@ import (
 	"github.com/acegobugs-cpu/AetherGrid/nodeAgent/internal/command"
 	"github.com/acegobugs-cpu/AetherGrid/nodeAgent/internal/config"
 	"github.com/acegobugs-cpu/AetherGrid/nodeAgent/internal/identity"
+	"github.com/acegobugs-cpu/AetherGrid/nodeAgent/internal/kubernetes"
 	"github.com/acegobugs-cpu/AetherGrid/nodeAgent/internal/state"
 )
 
@@ -30,6 +31,8 @@ type Agent struct {
 	collector     state.Collector
 	commands      *command.Registry
 	identityStore *identity.Store
+	kubernetes    *kubernetes.Service
+	k8sCollector  kubernetes.Collector
 
 	mu          sync.RWMutex
 	status      state.AgentStatus
@@ -37,6 +40,7 @@ type Agent struct {
 	lastSync    time.Time
 	lastState   state.NodeState
 	lastDesired *client.DesiredState
+	lastK8s     kubernetes.KubernetesState
 
 	nodeIP string
 
@@ -56,6 +60,13 @@ func New(cfg config.Config, logger *log.Logger) *Agent {
 
 // newAgent is the shared constructor used by New and by tests.
 func newAgent(cfg config.Config, logger *log.Logger, cpClient client.ControlPlaneClient, collector state.Collector) *Agent {
+	k8sService := kubernetes.NewService(kubernetes.ServiceConfig{
+		Enabled:        cfg.KubernetesEnabled,
+		RequestTimeout: cfg.KubernetesRequestTimeout,
+	}, func() (kubernetes.KubernetesClient, error) {
+		return kubernetes.NewClient(cfg.Kubeconfig)
+	}, logger)
+
 	agent := &Agent{
 		cfg:           cfg,
 		logger:        logger,
@@ -66,10 +77,17 @@ func newAgent(cfg config.Config, logger *log.Logger, cpClient client.ControlPlan
 		status:        state.StatusStarting,
 		processed:     make(map[string]bool),
 		nodeIP:        detectIP(cfg.ControlPlaneURL),
+		kubernetes:    k8sService,
+		k8sCollector:  kubernetes.NewStateCollector(k8sService),
 	}
 
 	agent.commands.Register("GET_STATUS", command.NewGetStatusHandler(agent.stateSnapshot))
 	agent.commands.Register("RESTART_AGENT", command.NewRestartHandler())
+	agent.commands.Register(command.CommandGetKubernetesStatus, command.NewGetKubernetesStatusHandler(k8sService))
+	agent.commands.Register(command.CommandListKubernetesNodes, command.NewListKubernetesNodesHandler(k8sService))
+	agent.commands.Register(command.CommandListKubernetesPods, command.NewListKubernetesPodsHandler(k8sService))
+	agent.commands.Register(command.CommandCreateTestNamespace, command.NewCreateTestNamespaceHandler(k8sService))
+	agent.commands.Register(command.CommandDeleteTestNamespace, command.NewDeleteTestNamespaceHandler(k8sService))
 	return agent
 }
 
@@ -78,9 +96,10 @@ func newAgent(cfg config.Config, logger *log.Logger, cpClient client.ControlPlan
 func (a *Agent) Run(ctx context.Context) error {
 	a.setStatus(state.StatusStarting)
 	a.logger.Printf("agent starting (version=%s)", a.cfg.Version)
-	a.logger.Printf("configuration loaded: control_plane=%s node_name=%s node_location=%s data_dir=%s heartbeat=%s state=%s commands=%s timeout=%s",
+	a.logger.Printf("configuration loaded: control_plane=%s node_name=%s node_location=%s data_dir=%s heartbeat=%s state=%s commands=%s timeout=%s kubernetes=%s",
 		a.cfg.ControlPlaneURL, a.cfg.NodeName, a.cfg.NodeLocation, a.cfg.DataDir,
-		a.cfg.HeartbeatInterval, a.cfg.StateReportInterval, a.cfg.CommandPollInterval, a.cfg.CommandTimeout)
+		a.cfg.HeartbeatInterval, a.cfg.StateReportInterval, a.cfg.CommandPollInterval, a.cfg.CommandTimeout,
+		map[bool]string{true: "enabled", false: "disabled"}[a.cfg.KubernetesEnabled])
 
 	if err := a.setupIdentity(ctx); err != nil {
 		return err
@@ -172,7 +191,7 @@ func (a *Agent) register(ctx context.Context) error {
 			Name:              a.cfg.NodeName,
 			Location:          a.cfg.NodeLocation,
 			IPAddress:         a.nodeIP,
-			KubernetesEnabled: false,
+			KubernetesEnabled: a.cfg.KubernetesEnabled,
 			WireGuardEnabled:  false,
 		})
 		if err == nil {
@@ -290,9 +309,16 @@ func (a *Agent) collectAndReport(ctx context.Context) {
 		a.currentNodeID(), collected.Status, collected.Hostname, collected.OS, collected.Architecture,
 		collected.CPUCount, collected.MemoryBytes, collected.UptimeSeconds, collected.AgentVersion)
 
+	k8sState := a.k8sCollector.Collect(ctx)
+	if k8sState.Error != "" {
+		a.logger.Printf("kubernetes state unavailable: node_id=%s error=%s", a.currentNodeID(), k8sState.Error)
+	}
+	a.setLastKubernetes(k8sState)
+
 	if err := a.cpClient.ReportState(ctx, a.currentNodeID(), client.StateReport{
-		Status:    string(collected.Status),
-		IPAddress: a.nodeIP,
+		Status:     string(collected.Status),
+		IPAddress:  a.nodeIP,
+		Kubernetes: &k8sState,
 	}); err != nil {
 		a.logger.Printf("state report failed: node_id=%s error=%v", a.currentNodeID(), err)
 		return
@@ -388,6 +414,20 @@ func (a *Agent) stateSnapshot() map[string]any {
 		lastDesired = a.lastDesired.DesiredStatus
 	}
 
+	kubernetesState := map[string]any{
+		"available":       a.lastK8s.Available,
+		"status":          a.lastK8s.Status,
+		"version":         a.lastK8s.Version,
+		"node_count":      a.lastK8s.NodeCount,
+		"ready_nodes":     a.lastK8s.ReadyNodes,
+		"not_ready_nodes": a.lastK8s.NotReadyNodes,
+		"workload": map[string]any{
+			"total_pods":   a.lastK8s.Workload.TotalPods,
+			"running_pods": a.lastK8s.Workload.RunningPods,
+			"failed_pods":  a.lastK8s.Workload.FailedPods,
+		},
+	}
+
 	return map[string]any{
 		"node_id":            a.nodeID,
 		"status":             a.status,
@@ -403,6 +443,8 @@ func (a *Agent) stateSnapshot() map[string]any {
 		"agent_version":      a.lastState.AgentVersion,
 		"last_sync":          formatTime(a.lastSync),
 		"last_desired":       lastDesired,
+		"kubernetes":         kubernetesState,
+		"kubernetes_enabled": a.cfg.KubernetesEnabled,
 		"supported_commands": a.commands.Types(),
 	}
 }
@@ -441,6 +483,12 @@ func (a *Agent) setLastState(s state.NodeState) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.lastState = s
+}
+
+func (a *Agent) setLastKubernetes(state kubernetes.KubernetesState) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.lastK8s = state
 }
 
 func (a *Agent) setLastDesired(d *client.DesiredState) {
