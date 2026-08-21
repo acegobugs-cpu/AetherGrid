@@ -12,8 +12,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
-	"github.com/acegobugs-cpu/AetherGrid/operator/api/v1alpha1"
-	"github.com/acegobugs-cpu/AetherGrid/operator/internal/controller"
+	"AetherGrid/operator/api/v1alpha1"
+	"AetherGrid/operator/internal/controller"
 )
 
 var scheme = runtime.NewScheme()

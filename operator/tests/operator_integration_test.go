@@ -25,8 +25,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/yaml"
 
-	"github.com/acegobugs-cpu/AetherGrid/operator/api/v1alpha1"
-	"github.com/acegobugs-cpu/AetherGrid/operator/internal/controller"
+	"AetherGrid/operator/api/v1alpha1"
+	"AetherGrid/operator/internal/controller"
 )
 
 const (

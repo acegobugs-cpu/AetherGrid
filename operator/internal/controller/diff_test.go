@@ -6,7 +6,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	"k8s.io/utils/ptr"
 
-	"github.com/acegobugs-cpu/AetherGrid/operator/api/v1alpha1"
+	"AetherGrid/operator/api/v1alpha1"
 )
 
 func deploymentForTest(image string, replicas int32) *appsv1.Deployment {

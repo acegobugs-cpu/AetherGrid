@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/acegobugs-cpu/AetherGrid/nodeAgent/internal/kubernetes"
+	"AetherGrid/nodeAgent/internal/kubernetes"
 )
 
 // ErrNotFound is returned by client methods when the control plane responds

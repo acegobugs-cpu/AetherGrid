@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/acegobugs-cpu/AetherGrid/operator/api/v1alpha1"
+	"AetherGrid/operator/api/v1alpha1"
 )
 
 // validateSpec enforces the AetherCluster spec invariants. The API server

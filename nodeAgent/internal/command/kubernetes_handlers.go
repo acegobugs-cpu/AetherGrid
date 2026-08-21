@@ -4,7 +4,7 @@ import (
 	"context"
 	"strings"
 
-	"github.com/acegobugs-cpu/AetherGrid/nodeAgent/internal/kubernetes"
+	"AetherGrid/nodeAgent/internal/kubernetes"
 )
 
 // Kubernetes command types. The control plane references these constants when

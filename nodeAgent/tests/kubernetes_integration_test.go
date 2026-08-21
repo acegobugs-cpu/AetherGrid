@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/acegobugs-cpu/AetherGrid/nodeAgent/internal/kubernetes"
+	"AetherGrid/nodeAgent/internal/kubernetes"
 )
 
 // kubernetesCluster returns a client for a real development cluster, skipping

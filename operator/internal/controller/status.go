@@ -6,7 +6,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	"github.com/acegobugs-cpu/AetherGrid/operator/api/v1alpha1"
+	"AetherGrid/operator/api/v1alpha1"
 )
 
 // observeDeployment reports readiness and degradation from the Deployment

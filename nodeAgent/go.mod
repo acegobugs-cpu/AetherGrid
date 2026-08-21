@@ -1,4 +1,4 @@
-module github.com/acegobugs-cpu/AetherGrid/nodeAgent
+module AetherGrid/nodeAgent
 
 go 1.26.3
 

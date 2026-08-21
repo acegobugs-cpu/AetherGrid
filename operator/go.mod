@@ -1,4 +1,4 @@
-module github.com/acegobugs-cpu/AetherGrid/operator
+module AetherGrid/operator
 
 go 1.26.3
 

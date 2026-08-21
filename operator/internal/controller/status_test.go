@@ -9,7 +9,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
 
-	"github.com/acegobugs-cpu/AetherGrid/operator/api/v1alpha1"
+	"AetherGrid/operator/api/v1alpha1"
 )
 
 func conditionOf(t *testing.T, cr *v1alpha1.AetherCluster, condType string) metav1.Condition {

@@ -10,10 +10,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/acegobugs-cpu/AetherGrid/nodeAgent/internal/client"
-	"github.com/acegobugs-cpu/AetherGrid/nodeAgent/internal/config"
-	"github.com/acegobugs-cpu/AetherGrid/nodeAgent/internal/kubernetes"
-	"github.com/acegobugs-cpu/AetherGrid/nodeAgent/internal/state"
+	"AetherGrid/nodeAgent/internal/client"
+	"AetherGrid/nodeAgent/internal/config"
+	"AetherGrid/nodeAgent/internal/kubernetes"
+	"AetherGrid/nodeAgent/internal/state"
 )
 
 // fakeClient is a configurable in-memory ControlPlaneClient for tests.

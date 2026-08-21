@@ -14,7 +14,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	"github.com/acegobugs-cpu/AetherGrid/operator/api/v1alpha1"
+	"AetherGrid/operator/api/v1alpha1"
 )
 
 const testNS = "aether-grid-test"

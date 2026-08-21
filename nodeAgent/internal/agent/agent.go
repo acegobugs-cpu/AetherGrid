@@ -14,13 +14,13 @@ import (
 	"sync"
 	"time"
 
-	"github.com/acegobugs-cpu/AetherGrid/nodeAgent/internal/backoff"
-	"github.com/acegobugs-cpu/AetherGrid/nodeAgent/internal/client"
-	"github.com/acegobugs-cpu/AetherGrid/nodeAgent/internal/command"
-	"github.com/acegobugs-cpu/AetherGrid/nodeAgent/internal/config"
-	"github.com/acegobugs-cpu/AetherGrid/nodeAgent/internal/identity"
-	"github.com/acegobugs-cpu/AetherGrid/nodeAgent/internal/kubernetes"
-	"github.com/acegobugs-cpu/AetherGrid/nodeAgent/internal/state"
+	"AetherGrid/nodeAgent/internal/backoff"
+	"AetherGrid/nodeAgent/internal/client"
+	"AetherGrid/nodeAgent/internal/command"
+	"AetherGrid/nodeAgent/internal/config"
+	"AetherGrid/nodeAgent/internal/identity"
+	"AetherGrid/nodeAgent/internal/kubernetes"
+	"AetherGrid/nodeAgent/internal/state"
 )
 
 // Agent coordinates the edge node agent's lifecycle.

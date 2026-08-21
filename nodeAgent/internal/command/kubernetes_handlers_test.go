@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/acegobugs-cpu/AetherGrid/nodeAgent/internal/kubernetes"
+	"AetherGrid/nodeAgent/internal/kubernetes"
 )
 
 // fakeKubernetesService is an in-memory KubernetesService for handler tests.

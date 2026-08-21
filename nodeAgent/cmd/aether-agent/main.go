@@ -8,8 +8,8 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/acegobugs-cpu/AetherGrid/nodeAgent/internal/agent"
-	"github.com/acegobugs-cpu/AetherGrid/nodeAgent/internal/config"
+	"AetherGrid/nodeAgent/internal/agent"
+	"AetherGrid/nodeAgent/internal/config"
 )
 
 func main() {

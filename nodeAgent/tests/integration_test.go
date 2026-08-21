@@ -19,8 +19,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/acegobugs-cpu/AetherGrid/nodeAgent/internal/agent"
-	"github.com/acegobugs-cpu/AetherGrid/nodeAgent/internal/config"
+	"AetherGrid/nodeAgent/internal/agent"
+	"AetherGrid/nodeAgent/internal/config"
 )
 
 // commandReport records a command result reported to the mock control plane.
