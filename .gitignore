@@ -1,6 +1,9 @@
 # Build artifacts
 /aether-grid
 /bin/
+controlPlane/control-plane
+nodeAgent/node-agent
+operator/operator
 
 # Local data
 /data/
