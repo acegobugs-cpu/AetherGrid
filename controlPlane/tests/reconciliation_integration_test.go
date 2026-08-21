@@ -64,8 +64,15 @@ func startReconciliationApp(t *testing.T, cfg reconcile.Config) *reconciliationA
 		&provisioning.Metrics{},
 		logger,
 	)
+	clusterService := service.NewClusterService(
+		sqlite.NewClusterRepository(repo.DB()),
+		sqlite.NewClusterOperationRepository(repo.DB()),
+		repo,
+		nil,
+		logger,
+	)
 
-	router := apihandler.NewRouter(nodeService, heartbeatService, reconciler, commandService, infrastructureService, logger)
+	router := apihandler.NewRouter(nodeService, heartbeatService, reconciler, commandService, infrastructureService, clusterService, logger)
 	server := httptest.NewServer(router)
 
 	reconciler.Start()

@@ -18,6 +18,7 @@ func NewRouter(
 	reconciler *service.ReconciliationService,
 	commands *service.CommandService,
 	infrastructures *service.InfrastructureService,
+	clusterService *service.ClusterService,
 	logger *log.Logger,
 ) http.Handler {
 	nodeHandler := handlers.NewNodeHandler(nodes, heartbeats, logger)
@@ -25,6 +26,7 @@ func NewRouter(
 	reconciliationHandler := handlers.NewReconciliationHandler(reconciler, logger)
 	kubernetesHandler := handlers.NewKubernetesHandler(nodes, commands, logger)
 	infrastructureHandler := handlers.NewInfrastructureHandler(infrastructures, logger)
+	clusterHandler := handlers.NewClusterHandler(clusterService, logger)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /nodes", nodeHandler.Create)
@@ -61,7 +63,11 @@ func NewRouter(
 	mux.HandleFunc("POST /infrastructure/{id}/apply", infrastructureHandler.StartApply)
 	mux.HandleFunc("POST /infrastructure/{id}/destroy", infrastructureHandler.StartDestroy)
 	mux.HandleFunc("POST /infrastructure/{id}/bootstrap", infrastructureHandler.StartBootstrap)
-	mux.HandleFunc("GET /infrastructure/metrics", infrastructureHandler.Metrics)
+	mux.HandleFunc("GET /clusters", infrastructureHandler.List)
+	mux.HandleFunc("GET /clusters/{id}", clusterHandler.Get)
+	mux.HandleFunc("POST /clusters", clusterHandler.Create)
+	mux.HandleFunc("POST /clusters/{id}/bootstrap", clusterHandler.Bootstrap)
+	mux.HandleFunc("GET /clusters/{id}/status", clusterHandler.Status)
 
 	mux.HandleFunc("GET /operations/{id}", infrastructureHandler.GetOperation)
 	mux.HandleFunc("POST /operations/{id}/cancel", infrastructureHandler.CancelOperation)

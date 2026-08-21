@@ -61,6 +61,14 @@ func newTestApp(t *testing.T) *testApp {
 		sqlite.NewReconciliationRepository(repo.DB()), commandService, logger)
 
 	infraRepo := sqlite.NewInfrastructureRepository(repo.DB())
+	clusterService := service.NewClusterService(
+		sqlite.NewClusterRepository(repo.DB()),
+		sqlite.NewClusterOperationRepository(repo.DB()),
+		repo,
+		nil,
+		logger,
+	)
+
 	infrastructureService := service.NewInfrastructureService(
 		infraRepo,
 		infraRepo,
@@ -75,6 +83,7 @@ func newTestApp(t *testing.T) *testApp {
 		reconciler,
 		commandService,
 		infrastructureService,
+		clusterService,
 		logger,
 	)
 	server := httptest.NewServer(router)

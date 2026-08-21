@@ -90,6 +90,13 @@ func startApp(t *testing.T, dbPath string) *appInstance {
 	commandService := service.NewCommandService(sqlite.NewCommandRepository(repo.DB()), repo)
 	reconciler := service.NewReconciliationService(testReconcileConfig, repo,
 		sqlite.NewReconciliationRepository(repo.DB()), commandService, logger)
+	clusterService := service.NewClusterService(
+		sqlite.NewClusterRepository(repo.DB()),
+		sqlite.NewClusterOperationRepository(repo.DB()),
+		repo,
+		nil,
+		logger,
+	)
 	infraRepo := sqlite.NewInfrastructureRepository(repo.DB())
 	infrastructureService := service.NewInfrastructureService(
 		infraRepo,
@@ -104,6 +111,7 @@ func startApp(t *testing.T, dbPath string) *appInstance {
 		reconciler,
 		commandService,
 		infrastructureService,
+		clusterService,
 		logger,
 	)
 	server := httptest.NewServer(router)

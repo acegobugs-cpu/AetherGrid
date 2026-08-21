@@ -54,7 +54,7 @@ func (s *SSHBootstrapper) Prepare(ctx context.Context, nodeID string) (*bootstra
 	privateKey, err := s.lookupPrivateKey()
 	if err != nil {
 		return &bootstrapper.BootstrapOperationResult{
-			Step:      bootstrapper.BootstrapStepPrepare,
+			Step:      string(bootstrapper.BootstrapStepPrepare),
 			Succeeded: false,
 			Error:     err.Error(),
 		}, nil
@@ -67,7 +67,7 @@ func (s *SSHBootstrapper) Prepare(ctx context.Context, nodeID string) (*bootstra
 	// we record the step as successful.
 	s.logger.Printf("bootstrap: prepare step complete for node %s", nodeID)
 	result := &bootstrapper.BootstrapOperationResult{
-		Step:      bootstrapper.BootstrapStepPrepare,
+		Step:      string(bootstrapper.BootstrapStepPrepare),
 		Succeeded: true,
 	}
 	return result, nil
@@ -88,7 +88,7 @@ func (s *SSHBootstrapper) InstallAgent(ctx context.Context, nodeID string) (*boo
 
 	s.logger.Printf("bootstrap: install agent step complete for node %s", nodeID)
 	result := &bootstrapper.BootstrapOperationResult{
-		Step:      bootstrapper.BootstrapStepInstallAgent,
+		Step:      string(bootstrapper.BootstrapStepInstallAgent),
 		Succeeded: true,
 	}
 	return result, nil
@@ -103,7 +103,7 @@ func (s *SSHBootstrapper) ConfigureNetwork(ctx context.Context, nodeID string) (
 	publicKey, privateKey, err := s.netmgr.CreateIdentity(ctx)
 	if err != nil {
 		return &bootstrapper.BootstrapOperationResult{
-			Step:      bootstrapper.BootstrapStepConfigureNet,
+			Step:      string(bootstrapper.BootstrapStepConfigureNet),
 			Succeeded: false,
 			Error:     fmt.Sprintf("generating WireGuard identity: %v", err),
 		}, nil
@@ -118,7 +118,7 @@ func (s *SSHBootstrapper) ConfigureNetwork(ctx context.Context, nodeID string) (
 	// PersistentKeepalive is required for NAT traversal.
 	if err := s.netmgr.RegisterPeer(ctx, publicKey, s.endpoint, "10.42.0.0/16", 25*time.Second); err != nil {
 		return &bootstrapper.BootstrapOperationResult{
-			Step:      bootstrapper.BootstrapStepConfigureNet,
+			Step:      string(bootstrapper.BootstrapStepConfigureNet),
 			Succeeded: false,
 			Error:     fmt.Sprintf("configuring WireGuard peer: %v", err),
 		}, nil
@@ -127,7 +127,7 @@ func (s *SSHBootstrapper) ConfigureNetwork(ctx context.Context, nodeID string) (
 	// Verify connectivity
 	if err := s.VerifyConnectivity(ctx); err != nil {
 		return &bootstrapper.BootstrapOperationResult{
-			Step:      bootstrapper.BootstrapStepConfigureNet,
+			Step:      string(bootstrapper.BootstrapStepConfigureNet),
 			Succeeded: false,
 			Error:     fmt.Sprintf("verifying WireGuard connectivity: %v", err),
 		}, nil
@@ -135,7 +135,7 @@ func (s *SSHBootstrapper) ConfigureNetwork(ctx context.Context, nodeID string) (
 
 	s.logger.Printf("bootstrap: configure network step complete for node %s", nodeID)
 	result := &bootstrapper.BootstrapOperationResult{
-		Step:      bootstrapper.BootstrapStepConfigureNet,
+		Step:      string(bootstrapper.BootstrapStepConfigureNet),
 		Succeeded: true,
 	}
 	return result, nil
@@ -149,7 +149,7 @@ func (s *SSHBootstrapper) Verify(ctx context.Context, nodeID string) (*bootstrap
 	// Verify connectivity to the control plane
 	if err := s.VerifyConnectivity(ctx); err != nil {
 		return &bootstrapper.BootstrapOperationResult{
-			Step:      bootstrapper.BootstrapStepVerify,
+			Step:      string(bootstrapper.BootstrapStepVerify),
 			Succeeded: false,
 			Error:     fmt.Sprintf("connectivity verification failed: %v", err),
 		}, nil
@@ -157,7 +157,7 @@ func (s *SSHBootstrapper) Verify(ctx context.Context, nodeID string) (*bootstrap
 
 	s.logger.Printf("bootstrap: verify step complete for node %s", nodeID)
 	result := &bootstrapper.BootstrapOperationResult{
-		Step:      bootstrapper.BootstrapStepVerify,
+		Step:      string(bootstrapper.BootstrapStepVerify),
 		Succeeded: true,
 	}
 	return result, nil
@@ -211,7 +211,7 @@ func (s *SSHBootstrapper) Bootstrap(ctx context.Context, nodeID string) (*bootst
 
 	if lastResult == nil {
 		lastResult = &bootstrapper.BootstrapOperationResult{
-			Step:      bootstrapper.BootstrapStepComplete,
+			Step:      string(bootstrapper.BootstrapStepComplete),
 			Succeeded: true,
 		}
 	}

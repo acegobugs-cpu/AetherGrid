@@ -53,14 +53,14 @@ type Bootstrap interface {
 
 // BootstrapOperationResult is the result of a single bootstrap step.
 type BootstrapOperationResult struct {
-	Step        BootstrapStep
+	Step        string
 	Succeeded   bool
 	Error       string
 	CompletedAt time.Time
 }
 
 // NewBootstrapOperationResult creates a new BootstrapOperationResult.
-func NewBootstrapOperationResult(step BootstrapStep, succeeded bool, errorMsg string) BootstrapOperationResult {
+func NewBootstrapOperationResult(step string, succeeded bool, errorMsg string) BootstrapOperationResult {
 	return BootstrapOperationResult{
 		Step:        step,
 		Succeeded:   succeeded,
@@ -105,7 +105,7 @@ type Bootstrapper interface {
 type BootstrapOperation struct {
 	ID          string
 	NodeID      string
-	CurrentStep BootstrapStep
+	CurrentStep string
 	Status      BootstrapStatus
 	StartedAt   *time.Time
 	CompletedAt *time.Time
@@ -119,7 +119,7 @@ func NewBootstrapOperation(id, nodeID string) BootstrapOperation {
 	return BootstrapOperation{
 		ID:          id,
 		NodeID:      nodeID,
-		CurrentStep: BootstrapStepPrepare,
+		CurrentStep: string(BootstrapStepPrepare),
 		Status:      BootstrapStatusPending,
 		CreatedAt:   time.Now().UTC(),
 	}

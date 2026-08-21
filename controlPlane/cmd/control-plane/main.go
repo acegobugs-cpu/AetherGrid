@@ -74,10 +74,18 @@ func main() {
 		logger,
 	)
 
+	clusterService := service.NewClusterService(
+		sqlite.NewClusterRepository(nodeRepo.DB()),
+		sqlite.NewClusterOperationRepository(nodeRepo.DB()),
+		nodeRepo,
+		nil, // K3sBootstrapper - will be initialized later
+		logger,
+	)
+
 	nodeService.SetReconcileNotifier(reconciler.Notify)
 	heartbeatService.SetReconcileNotifier(reconciler.Notify)
 
-	router := apihandler.NewRouter(nodeService, heartbeatService, reconciler, commandService, infrastructureService, logger)
+	router := apihandler.NewRouter(nodeService, heartbeatService, reconciler, commandService, infrastructureService, clusterService, logger)
 
 	if err := infrastructureService.Recover(ctx); err != nil {
 		logger.Fatalf("recovering infrastructure state: %v", err)
