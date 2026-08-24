@@ -12,16 +12,16 @@ type ErrorKind string
 
 // Provisioning error kinds.
 const (
-	KindInvalidSpecification    ErrorKind = "INVALID_SPECIFICATION"
-	KindTerraformInitFailed     ErrorKind = "TERRAFORM_INIT_FAILED"
-	KindTerraformPlanFailed     ErrorKind = "TERRAFORM_PLAN_FAILED"
-	KindTerraformApplyFailed    ErrorKind = "TERRAFORM_APPLY_FAILED"
-	KindTerraformDestroyFailed  ErrorKind = "TERRAFORM_DESTROY_FAILED"
-	KindTerraformStatusFailed   ErrorKind = "TERRAFORM_STATUS_FAILED"
-	KindProviderUnavailable     ErrorKind = "PROVIDER_UNAVAILABLE"
-	KindOutputUnavailable       ErrorKind = "OUTPUT_UNAVAILABLE"
-	KindTimeout                 ErrorKind = "TIMEOUT"
-	KindCancelled               ErrorKind = "CANCELLED"
+	KindInvalidSpecification   ErrorKind = "INVALID_SPECIFICATION"
+	KindTerraformInitFailed    ErrorKind = "TERRAFORM_INIT_FAILED"
+	KindTerraformPlanFailed    ErrorKind = "TERRAFORM_PLAN_FAILED"
+	KindTerraformApplyFailed   ErrorKind = "TERRAFORM_APPLY_FAILED"
+	KindTerraformDestroyFailed ErrorKind = "TERRAFORM_DESTROY_FAILED"
+	KindTerraformStatusFailed  ErrorKind = "TERRAFORM_STATUS_FAILED"
+	KindProviderUnavailable    ErrorKind = "PROVIDER_UNAVAILABLE"
+	KindOutputUnavailable      ErrorKind = "OUTPUT_UNAVAILABLE"
+	KindTimeout                ErrorKind = "TIMEOUT"
+	KindCancelled              ErrorKind = "CANCELLED"
 )
 
 // Error is a structured provisioning error. The Message must never contain

@@ -20,11 +20,26 @@ type Config struct {
 	ReconciliationMaxBackoff      time.Duration
 	ReconciliationRecoveryTimeout time.Duration
 
+	// Phase 9 autonomous recovery policy. Zero values inherit the
+	// conservative engine defaults (worker recovery enabled, control-plane
+	// recovery disabled, 3 attempts, 2 concurrent recoveries).
+	WorkerRecoveryEnabled        bool
+	ControlPlaneRecoveryEnabled  bool
+	RecoveryPolicySet            bool
+	MaxRecoveryAttempts          int
+	MaxConcurrentRecoveries      int
+	RecoveryCooldown             time.Duration
+	RecoveryBackoffBase          time.Duration
+	RecoveryBackoffMax           time.Duration
+	RecoveryBackoffJitterEnabled bool
+	MaxReplacementsPerCluster    int
+	FailureConfirmMultiplier     int
+
 	// Infrastructure provisioning.
-	TerraformBin      string
-	TerraformWorkDir  string
+	TerraformBin       string
+	TerraformWorkDir   string
 	TerraformModuleDir string
-	TerraformTimeout  time.Duration
+	TerraformTimeout   time.Duration
 }
 
 // Defaults used when the corresponding environment variable is not set.
@@ -40,10 +55,10 @@ const (
 	defaultReconciliationMaxBackoff      = 10 * time.Second
 	defaultReconciliationRecoveryTimeout = 60 * time.Second
 
-	defaultTerraformBin      = "terraform"
-	defaultTerraformWorkDir  = "./data/terraform"
+	defaultTerraformBin       = "terraform"
+	defaultTerraformWorkDir   = "./data/terraform"
 	defaultTerraformModuleDir = "./terraform/modules/edge-node"
-	defaultTerraformTimeout  = 5 * time.Minute
+	defaultTerraformTimeout   = 5 * time.Minute
 )
 
 // ListenAddress returns the host:port address the HTTP server should bind to.
@@ -65,6 +80,19 @@ func FromEnv() Config {
 		ReconciliationMaxRetries:      envIntOr("RECONCILIATION_MAX_RETRIES", defaultReconciliationMaxRetries),
 		ReconciliationMaxBackoff:      envDurationOr("RECONCILIATION_MAX_BACKOFF", defaultReconciliationMaxBackoff),
 		ReconciliationRecoveryTimeout: envDurationOr("RECONCILIATION_RECOVERY_TIMEOUT", defaultReconciliationRecoveryTimeout),
+
+		// Phase 9 recovery policy (defaults documented in docs/recovery.md).
+		WorkerRecoveryEnabled:        envBoolOr("WORKER_RECOVERY_ENABLED", true),
+		ControlPlaneRecoveryEnabled:  envBoolOr("CONTROL_PLANE_RECOVERY_ENABLED", false),
+		RecoveryPolicySet:            true,
+		MaxRecoveryAttempts:          envIntOr("MAX_RECOVERY_ATTEMPTS", 3),
+		MaxConcurrentRecoveries:      envIntOr("MAX_CONCURRENT_RECOVERIES", 2),
+		RecoveryCooldown:             envDurationOr("RECOVERY_COOLDOWN", 30*time.Minute),
+		RecoveryBackoffBase:          envDurationOr("RECOVERY_BACKOFF_BASE", 10*time.Second),
+		RecoveryBackoffMax:           envDurationOr("RECOVERY_BACKOFF_MAX", 5*time.Minute),
+		RecoveryBackoffJitterEnabled: envBoolOr("RECOVERY_BACKOFF_JITTER", true),
+		MaxReplacementsPerCluster:    envIntOr("MAX_REPLACEMENTS_PER_CLUSTER", 2),
+		FailureConfirmMultiplier:     envIntOr("FAILURE_CONFIRM_MULTIPLIER", 3),
 
 		TerraformBin:       envOr("TERRAFORM_BIN", defaultTerraformBin),
 		TerraformWorkDir:   envOr("TERRAFORM_WORK_DIR", defaultTerraformWorkDir),
@@ -92,6 +120,15 @@ func envIntOr(key string, fallback int) int {
 func envDurationOr(key string, fallback time.Duration) time.Duration {
 	if value := os.Getenv(key); value != "" {
 		if parsed, err := time.ParseDuration(value); err == nil {
+			return parsed
+		}
+	}
+	return fallback
+}
+
+func envBoolOr(key string, fallback bool) bool {
+	if value := os.Getenv(key); value != "" {
+		if parsed, err := strconv.ParseBool(value); err == nil {
 			return parsed
 		}
 	}

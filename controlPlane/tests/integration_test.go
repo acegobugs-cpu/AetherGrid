@@ -89,7 +89,7 @@ func startApp(t *testing.T, dbPath string) *appInstance {
 	logger := log.New(io.Discard, "", 0)
 	commandService := service.NewCommandService(sqlite.NewCommandRepository(repo.DB()), repo)
 	reconciler := service.NewReconciliationService(testReconcileConfig, repo,
-		sqlite.NewReconciliationRepository(repo.DB()), commandService, logger)
+		sqlite.NewReconciliationRepository(repo.DB()), commandService, logger, nil)
 	clusterService := service.NewClusterService(
 		sqlite.NewClusterRepository(repo.DB()),
 		sqlite.NewClusterOperationRepository(repo.DB()),

@@ -20,11 +20,11 @@ import (
 // with per-cluster locking so two operations can never run concurrently against
 // the same cluster.
 type ClusterService struct {
-	clusterRepo RepositoryWithCluster
-	opRepo      repository.ClusterOperationRepository
+	clusterRepo  RepositoryWithCluster
+	opRepo       repository.ClusterOperationRepository
 	bootstrapper bootstrapper.KubernetesBootstrapper
-	nodeRepo   repository.NodeRepository
-	logger     *log.Logger
+	nodeRepo     repository.NodeRepository
+	logger       *log.Logger
 
 	// lock guards locks and cancels.
 	lock sync.Mutex
@@ -128,8 +128,8 @@ func (s *ClusterService) Create(ctx context.Context, spec domain.ClusterSpec) (*
 			WorkerConcurrency: spec.WorkerConcurrency,
 		},
 		Status: domain.ClusterStatus{
-			State:           domain.ClusterStatePending,
-			WorkerNodes:     make([]domain.ClusterNode, len(spec.WorkerNodes)),
+			State:       domain.ClusterStatePending,
+			WorkerNodes: make([]domain.ClusterNode, len(spec.WorkerNodes)),
 		},
 		CreatedAt: now,
 		UpdatedAt: now,
@@ -547,9 +547,9 @@ func (s *ClusterService) updateWorkerNodes(cluster *domain.Cluster, status *boot
 			role = cluster.Status.WorkerNodes[i].Role
 		}
 		workers = append(workers, domain.ClusterNode{
-			NodeID:    nodeID,
-			Role:      role,
-			Ready:     i < status.ReadyWorkerCount,
+			NodeID: nodeID,
+			Role:   role,
+			Ready:  i < status.ReadyWorkerCount,
 		})
 	}
 	return workers

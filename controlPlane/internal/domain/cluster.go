@@ -51,19 +51,19 @@ func (s ClusterOperationStatus) Terminal() bool {
 
 // Kubernetes error types for bootstrap failures.
 var (
-	ErrKubernetesInstallationFailed       = errors.New("kubernetes installation failed")
-	ErrControlPlaneInitializationFailed   = errors.New("control-plane initialization failed")
-	ErrKubernetesAPITimeout              = errors.New("kubernetes API timeout")
-	ErrWorkerJoinFailed                  = errors.New("worker join failed")
-	ErrKubernetesNodeNotReady            = errors.New("kubernetes node not ready")
-	ErrVersionMismatch                   = errors.New("version mismatch")
-	ErrClusterVerificationFailed         = errors.New("cluster verification failed")
+	ErrKubernetesInstallationFailed     = errors.New("kubernetes installation failed")
+	ErrControlPlaneInitializationFailed = errors.New("control-plane initialization failed")
+	ErrKubernetesAPITimeout             = errors.New("kubernetes API timeout")
+	ErrWorkerJoinFailed                 = errors.New("worker join failed")
+	ErrKubernetesNodeNotReady           = errors.New("kubernetes node not ready")
+	ErrVersionMismatch                  = errors.New("version mismatch")
+	ErrClusterVerificationFailed        = errors.New("cluster verification failed")
 	ErrInvalidClusterToken              = errors.New("invalid cluster token")
-	ErrNodeAlreadyInCluster              = errors.New("node already in cluster")
-	ErrClusterOperationInProgress        = errors.New("cluster operation already in progress")
-	ErrClusterNotFound                   = errors.New("cluster not found")
-	ErrNodeNotReadyForBootstrap          = errors.New("node not ready for kubernetes bootstrap")
-	ErrInvalidJoinInfo                   = errors.New("invalid join information retrieved")
+	ErrNodeAlreadyInCluster             = errors.New("node already in cluster")
+	ErrClusterOperationInProgress       = errors.New("cluster operation already in progress")
+	ErrClusterNotFound                  = errors.New("cluster not found")
+	ErrNodeNotReadyForBootstrap         = errors.New("node not ready for kubernetes bootstrap")
+	ErrInvalidJoinInfo                  = errors.New("invalid join information retrieved")
 )
 
 // Kubernetes label constants used by AETHER-GRID to associate Kubernetes
@@ -115,7 +115,9 @@ const (
 	ClusterStateVerifying     ClusterLifecycleState = "VERIFYING"
 	ClusterStateReady         ClusterLifecycleState = "READY"
 	ClusterStateDegraded      ClusterLifecycleState = "DEGRADED"
+	ClusterStateRecovering    ClusterLifecycleState = "RECOVERING"
 	ClusterStateFailed        ClusterLifecycleState = "FAILED"
+	ClusterStateDestroyed     ClusterLifecycleState = "DESTROYED"
 )
 
 // allClusterStates is the canonical set of valid cluster lifecycle states.
@@ -127,7 +129,9 @@ var allClusterStates = []ClusterLifecycleState{
 	ClusterStateVerifying,
 	ClusterStateReady,
 	ClusterStateDegraded,
+	ClusterStateRecovering,
 	ClusterStateFailed,
+	ClusterStateDestroyed,
 }
 
 // Valid reports whether s is a known cluster lifecycle state.
@@ -143,7 +147,7 @@ func (s ClusterLifecycleState) Valid() bool {
 // Terminal reports whether the cluster state is a final state. A cluster in a
 // terminal state is not executing an operation.
 func (s ClusterLifecycleState) Terminal() bool {
-	return s == ClusterStateReady || s == ClusterStateFailed
+	return s == ClusterStateReady || s == ClusterStateFailed || s == ClusterStateDestroyed
 }
 
 // IsReady reports whether the cluster has reached the Ready state.
@@ -206,11 +210,11 @@ func (s ClusterSpec) Validate() error {
 // ClusterNode describes a Kubernetes node within a cluster from AETHER-GRID's
 // perspective. It associates the AETHER-GRID node with its Kubernetes identity.
 type ClusterNode struct {
-	NodeID    string
-	Role      ClusterRole
+	NodeID      string
+	Role        ClusterRole
 	K8sNodeName string
-	Ready     bool
-	Labels    map[string]string
+	Ready       bool
+	Labels      map[string]string
 }
 
 // ClusterStatus is the observed state of a Kubernetes cluster.
@@ -246,8 +250,8 @@ type ClusterOperation struct {
 	StartedAt      *time.Time
 	CompletedAt    *time.Time
 	Error          string
-	CurrentStep     string
-	SucceededSteps  []string
+	CurrentStep    string
+	SucceededSteps []string
 	CreatedAt      time.Time
 	UpdatedAt      time.Time
 }
@@ -257,19 +261,19 @@ type KubernetesBootstrapStep string
 
 // Kubernetes bootstrap steps.
 const (
-	K8sBootstrapStepValidateCluster      KubernetesBootstrapStep = "VALIDATE_CLUSTER"
-	K8sBootstrapStepValidateCPNode       KubernetesBootstrapStep = "VALIDATE_CP_NODE"
-	K8sBootstrapStepVerifyCPNetwork      KubernetesBootstrapStep = "VERIFY_CP_NETWORK"
-	K8sBootstrapStepInstallServer        KubernetesBootstrapStep = "INSTALL_SERVER"
-	K8sBootstrapStepInitializeServer     KubernetesBootstrapStep = "INITIALIZE_SERVER"
-	K8sBootstrapStepWaitForAPI           KubernetesBootstrapStep = "WAIT_FOR_API"
-	K8sBootstrapStepRetrieveJoinInfo     KubernetesBootstrapStep = "RETRIEVE_JOIN_INFO"
-	K8sBootstrapStepVerifyServerReady    KubernetesBootstrapStep = "VERIFY_SERVER_READY"
-	K8sBootstrapStepBootstrapWorkers     KubernetesBootstrapStep = "BOOTSTRAP_WORKERS"
-	K8sBootstrapStepJoinWorkers          KubernetesBootstrapStep = "JOIN_WORKERS"
-	K8sBootstrapStepWaitForWorkers       KubernetesBootstrapStep = "WAIT_FOR_WORKERS"
-	K8sBootstrapStepVerifyCluster        KubernetesBootstrapStep = "VERIFY_CLUSTER"
-	K8sBootstrapStepRegisterCluster      KubernetesBootstrapStep = "REGISTER_CLUSTER"
+	K8sBootstrapStepValidateCluster   KubernetesBootstrapStep = "VALIDATE_CLUSTER"
+	K8sBootstrapStepValidateCPNode    KubernetesBootstrapStep = "VALIDATE_CP_NODE"
+	K8sBootstrapStepVerifyCPNetwork   KubernetesBootstrapStep = "VERIFY_CP_NETWORK"
+	K8sBootstrapStepInstallServer     KubernetesBootstrapStep = "INSTALL_SERVER"
+	K8sBootstrapStepInitializeServer  KubernetesBootstrapStep = "INITIALIZE_SERVER"
+	K8sBootstrapStepWaitForAPI        KubernetesBootstrapStep = "WAIT_FOR_API"
+	K8sBootstrapStepRetrieveJoinInfo  KubernetesBootstrapStep = "RETRIEVE_JOIN_INFO"
+	K8sBootstrapStepVerifyServerReady KubernetesBootstrapStep = "VERIFY_SERVER_READY"
+	K8sBootstrapStepBootstrapWorkers  KubernetesBootstrapStep = "BOOTSTRAP_WORKERS"
+	K8sBootstrapStepJoinWorkers       KubernetesBootstrapStep = "JOIN_WORKERS"
+	K8sBootstrapStepWaitForWorkers    KubernetesBootstrapStep = "WAIT_FOR_WORKERS"
+	K8sBootstrapStepVerifyCluster     KubernetesBootstrapStep = "VERIFY_CLUSTER"
+	K8sBootstrapStepRegisterCluster   KubernetesBootstrapStep = "REGISTER_CLUSTER"
 )
 
 // ReadyCount returns the number of ready worker nodes.

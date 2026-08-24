@@ -26,7 +26,7 @@ func testReconciler(t *testing.T) (*ReconciliationService, *mockNodeRepository) 
 		MaxRetries:       3,
 		MaxBackoff:       time.Second,
 		RecoveryTimeout:  time.Minute,
-	}, repo, history, dispatcher, logger)
+	}, repo, history, dispatcher, logger, nil)
 
 	return reconciler, repo
 }

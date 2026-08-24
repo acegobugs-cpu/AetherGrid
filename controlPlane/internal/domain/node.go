@@ -9,28 +9,40 @@ type NodeStatus string
 
 // Node lifecycle statuses.
 const (
-	StatusProvisioning NodeStatus = "PROVISIONING"
-	StatusProvisioned  NodeStatus = "PROVISIONED"
-	StatusConnecting   NodeStatus = "CONNECTING"
-	StatusRegistered   NodeStatus = "REGISTERED"
-	StatusConfiguring  NodeStatus = "CONFIGURING"
-	StatusReady        NodeStatus = "READY"
-	StatusUnhealthy    NodeStatus = "UNHEALTHY"
-	StatusOffline      NodeStatus = "OFFLINE"
-	StatusRecovering   NodeStatus = "RECOVERING"
+	StatusUnknown       NodeStatus = "UNKNOWN"
+	StatusProvisioning  NodeStatus = "PROVISIONING"
+	StatusProvisioned   NodeStatus = "PROVISIONED"
+	StatusBootstrapping NodeStatus = "BOOTSTRAPPING"
+	StatusConnecting    NodeStatus = "CONNECTING"
+	StatusRegistered    NodeStatus = "REGISTERED"
+	StatusConfiguring   NodeStatus = "CONFIGURING"
+	StatusReady         NodeStatus = "READY"
+	StatusDegraded      NodeStatus = "DEGRADED"
+	StatusUnhealthy     NodeStatus = "UNHEALTHY"
+	StatusOffline       NodeStatus = "OFFLINE"
+	StatusUnreachable   NodeStatus = "UNREACHABLE"
+	StatusFailed        NodeStatus = "FAILED"
+	StatusRecovering    NodeStatus = "RECOVERING"
+	StatusRemoved       NodeStatus = "REMOVED"
 )
 
 // allStatuses is the canonical set of valid statuses.
 var allStatuses = []NodeStatus{
+	StatusUnknown,
 	StatusProvisioning,
 	StatusProvisioned,
+	StatusBootstrapping,
 	StatusConnecting,
 	StatusRegistered,
 	StatusConfiguring,
 	StatusReady,
+	StatusDegraded,
 	StatusUnhealthy,
 	StatusOffline,
+	StatusUnreachable,
+	StatusFailed,
 	StatusRecovering,
+	StatusRemoved,
 }
 
 // Valid reports whether s is a known node status.
@@ -71,6 +83,9 @@ type Node struct {
 	// is nil until the agent reports Kubernetes state.
 	Kubernetes *KubernetesActualState
 
+	// Role identifies the node's function in the cluster.
+	Role ClusterRole
+
 	// Reconciliation metadata, updated by the reconciliation engine.
 	LastReconciliation           *time.Time
 	LastSuccessfulReconciliation *time.Time
@@ -79,6 +94,16 @@ type Node struct {
 	LastReconciliationError      string
 	LastReconciliationDeadline   *time.Time
 	ReconciliationAttempts       int
+
+	// Recovery state tracking.
+	RecoveryState    RecoveryState
+	RecoveryFailure  string
+	RecoveryAttempts int
+	LastRecoveryAt   *time.Time
+	NextRetryAt      *time.Time
+	// FailureStreak counts consecutive confirmed failures without an
+	// intervening successful recovery; it drives flapping detection.
+	FailureStreak int
 
 	CreatedAt time.Time
 	UpdatedAt time.Time

@@ -120,9 +120,9 @@ func (h *ClusterHandler) Bootstrap(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.writeJSON(w, http.StatusAccepted, clusterBootstrapResponse{
-		ID:      op.ID,
-		Type:    string(op.Type),
-		Status:  string(op.Status),
+		ID:        op.ID,
+		Type:      string(op.Type),
+		Status:    string(op.Status),
 		CreatedAt: op.CreatedAt.UTC().Format(time.RFC3339),
 	})
 }
@@ -144,64 +144,64 @@ func (h *ClusterHandler) Status(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.writeJSON(w, http.StatusOK, clusterGetResponse{
-		ID:        cluster.ID,
-		Name:      cluster.Spec.Name,
-		Status:    clusterStatusToResponse(cluster.Status),
+		ID:                cluster.ID,
+		Name:              cluster.Spec.Name,
+		Status:            clusterStatusToResponse(cluster.Status),
 		KubernetesVersion: cluster.Status.KubernetesVersion,
-		ControlPlaneNode: cluster.Status.ControlPlaneNode,
-		WorkerCount: cluster.Status.ReadyWorkerCount,
-		ReadyWorkerCount: cluster.Status.ReadyWorkerCount,
-		APIEndpoint: cluster.Status.APIEndpoint,
-		LastOperation: cluster.Status.LastOperation,
-		LastError: cluster.Status.LastError,
-		LastVerifiedAt: cluster.Status.LastVerifiedAt,
+		ControlPlaneNode:  cluster.Status.ControlPlaneNode,
+		WorkerCount:       cluster.Status.ReadyWorkerCount,
+		ReadyWorkerCount:  cluster.Status.ReadyWorkerCount,
+		APIEndpoint:       cluster.Status.APIEndpoint,
+		LastOperation:     cluster.Status.LastOperation,
+		LastError:         cluster.Status.LastError,
+		LastVerifiedAt:    cluster.Status.LastVerifiedAt,
 	})
 }
 
 type clusterCreateResponse struct {
-	ID        string                       `json:"id"`
-	Name      string                       `json:"name"`
-	Status    clusterStatusResponse        `json:"status"`
-	CreatedAt time.Time                    `json:"created_at"`
-	UpdatedAt time.Time                    `json:"updated_at"`
+	ID        string                `json:"id"`
+	Name      string                `json:"name"`
+	Status    clusterStatusResponse `json:"status"`
+	CreatedAt time.Time             `json:"created_at"`
+	UpdatedAt time.Time             `json:"updated_at"`
 }
 
 type clusterGetResponse struct {
-	ID                      string                       `json:"id"`
-	Name                    string                       `json:"name"`
-	Status                  clusterStatusResponse        `json:"status"`
-	Spec                    clusterSpecResponse          `json:"spec,omitempty"`
-	CreatedAt               time.Time                    `json:"created_at"`
-	UpdatedAt               time.Time                    `json:"updated_at"`
-	KubernetesVersion       string                       `json:"kubernetes_version,omitempty"`
-	ControlPlaneNode        string                       `json:"control_plane_node,omitempty"`
-	WorkerCount             int                          `json:"worker_count,omitempty"`
-	ReadyWorkerCount        int                          `json:"ready_worker_count,omitempty"`
-	APIEndpoint             string                       `json:"api_endpoint,omitempty"`
-	LastOperation           string                       `json:"last_operation,omitempty"`
-	LastError               string                       `json:"last_error,omitempty"`
-	LastVerifiedAt          *time.Time                   `json:"last_verified_at,omitempty"`
+	ID                string                `json:"id"`
+	Name              string                `json:"name"`
+	Status            clusterStatusResponse `json:"status"`
+	Spec              clusterSpecResponse   `json:"spec,omitempty"`
+	CreatedAt         time.Time             `json:"created_at"`
+	UpdatedAt         time.Time             `json:"updated_at"`
+	KubernetesVersion string                `json:"kubernetes_version,omitempty"`
+	ControlPlaneNode  string                `json:"control_plane_node,omitempty"`
+	WorkerCount       int                   `json:"worker_count,omitempty"`
+	ReadyWorkerCount  int                   `json:"ready_worker_count,omitempty"`
+	APIEndpoint       string                `json:"api_endpoint,omitempty"`
+	LastOperation     string                `json:"last_operation,omitempty"`
+	LastError         string                `json:"last_error,omitempty"`
+	LastVerifiedAt    *time.Time            `json:"last_verified_at,omitempty"`
 }
 
 type clusterListResponse struct {
-	ID        string                       `json:"id"`
-	Name      string                       `json:"name"`
-	Status    clusterStatusResponse        `json:"status"`
-	CreatedAt time.Time                    `json:"created_at"`
+	ID        string                `json:"id"`
+	Name      string                `json:"name"`
+	Status    clusterStatusResponse `json:"status"`
+	CreatedAt time.Time             `json:"created_at"`
 }
 
 // clusterStatusResponse represents the JSON cluster status response.
 type clusterStatusResponse struct {
-	State             domain.ClusterLifecycleState `json:"state"`
-	KubernetesVersion string                       `json:"kubernetes_version,omitempty"`
-	ControlPlaneNode  string                       `json:"control_plane_node,omitempty"`
-	WorkerCount       int                          `json:"worker_count,omitempty"`
-	ReadyWorkerCount  int                          `json:"ready_worker_count,omitempty"`
-	NotReadyWorkerCount int                        `json:"not_ready_worker_count,omitempty"`
-	APIEndpoint       string                       `json:"api_endpoint,omitempty"`
-	LastOperation     string                       `json:"last_operation,omitempty"`
-	LastError         string                       `json:"last_error,omitempty"`
-	LastVerifiedAt    *time.Time                   `json:"last_verified_at,omitempty"`
+	State               domain.ClusterLifecycleState `json:"state"`
+	KubernetesVersion   string                       `json:"kubernetes_version,omitempty"`
+	ControlPlaneNode    string                       `json:"control_plane_node,omitempty"`
+	WorkerCount         int                          `json:"worker_count,omitempty"`
+	ReadyWorkerCount    int                          `json:"ready_worker_count,omitempty"`
+	NotReadyWorkerCount int                          `json:"not_ready_worker_count,omitempty"`
+	APIEndpoint         string                       `json:"api_endpoint,omitempty"`
+	LastOperation       string                       `json:"last_operation,omitempty"`
+	LastError           string                       `json:"last_error,omitempty"`
+	LastVerifiedAt      *time.Time                   `json:"last_verified_at,omitempty"`
 }
 
 type clusterSpecResponse struct {
@@ -224,16 +224,16 @@ type clusterBootstrapResponse struct {
 
 func clusterStatusToResponse(status domain.ClusterStatus) clusterStatusResponse {
 	return clusterStatusResponse{
-		State:             status.State,
-		KubernetesVersion: status.KubernetesVersion,
-		ControlPlaneNode:  status.ControlPlaneNode,
-		WorkerCount:       len(status.WorkerNodes),
-		ReadyWorkerCount:  status.ReadyWorkerCount,
+		State:               status.State,
+		KubernetesVersion:   status.KubernetesVersion,
+		ControlPlaneNode:    status.ControlPlaneNode,
+		WorkerCount:         len(status.WorkerNodes),
+		ReadyWorkerCount:    status.ReadyWorkerCount,
 		NotReadyWorkerCount: status.ReadyWorkerCount,
-		APIEndpoint:       status.APIEndpoint,
-		LastOperation:     status.LastOperation,
-		LastError:         status.LastError,
-		LastVerifiedAt:    status.LastVerifiedAt,
+		APIEndpoint:         status.APIEndpoint,
+		LastOperation:       status.LastOperation,
+		LastError:           status.LastError,
+		LastVerifiedAt:      status.LastVerifiedAt,
 	}
 }
 

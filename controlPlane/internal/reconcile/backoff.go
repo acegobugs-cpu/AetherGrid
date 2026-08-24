@@ -2,6 +2,7 @@ package reconcile
 
 import (
 	"math"
+	"math/rand"
 	"time"
 )
 
@@ -18,6 +19,20 @@ func backoff(attempt int, base, max time.Duration) time.Duration {
 		return max
 	}
 	return delay
+}
+
+// backoffJittered applies full jitter within [delay/2, delay] so concurrent
+// failures do not synchronize their retries (Phase 9 #31). Jitter never
+// increases the computed delay.
+func backoffJittered(delay time.Duration, rng *rand.Rand) time.Duration {
+	if delay <= 0 {
+		return delay
+	}
+	half := delay / 2
+	if half <= 0 {
+		return delay
+	}
+	return half + time.Duration(rng.Int63n(int64(half)+1))
 }
 
 // nextAttempt computes the 1-based attempt number following a failed cycle.

@@ -21,6 +21,24 @@ type Metrics struct {
 	CyclesFailed atomic.Int64
 	// CommandsDispatched counts corrective commands sent to agents.
 	CommandsDispatched atomic.Int64
+
+	// Phase 9 recovery counters.
+	// NodeFailures counts confirmed node failures.
+	NodeFailures atomic.Int64
+	// RecoveriesStarted counts recovery workflows started.
+	RecoveriesStarted atomic.Int64
+	// RecoveryAttempts counts individual recovery attempts.
+	RecoveryAttempts atomic.Int64
+	// RecoveriesSucceeded counts completed recoveries.
+	RecoveriesSucceeded atomic.Int64
+	// RecoveriesFailed counts exhausted recoveries.
+	RecoveriesFailed atomic.Int64
+	// RecoveriesBlocked counts circuit-breaker trips.
+	RecoveriesBlocked atomic.Int64
+	// NodesSuspected counts nodes marked suspected (unreachable).
+	NodesSuspected atomic.Int64
+	// NodesRecoveredFromSuspicion counts transient failures that healed.
+	NodesRecoveredFromSuspicion atomic.Int64
 	// PendingWork is the number of nodes awaiting reconciliation. Reads are
 	// best-effort snapshots of the queue.
 	PendingWork func() int
@@ -53,6 +71,47 @@ func (m *Metrics) recordCycle(started time.Time, result string) {
 // recordCommand increments the dispatched-command counter.
 func (m *Metrics) recordCommand() {
 	m.CommandsDispatched.Add(1)
+}
+
+// recordNodeFailure increments the confirmed-failure counter.
+func (m *Metrics) recordNodeFailure() {
+	m.NodeFailures.Add(1)
+}
+
+// recordRecoveryStarted increments the recovery-workflow counter.
+func (m *Metrics) recordRecoveryStarted() {
+	m.RecoveriesStarted.Add(1)
+}
+
+// recordRecoveryAttempt increments the per-attempt counter.
+func (m *Metrics) recordRecoveryAttempt() {
+	m.RecoveryAttempts.Add(1)
+}
+
+// recordRecoverySuccess increments the successful-recovery counter.
+func (m *Metrics) recordRecoverySuccess() {
+	m.RecoveriesSucceeded.Add(1)
+}
+
+// recordRecoveryFailure increments the exhausted-recovery counter.
+func (m *Metrics) recordRecoveryFailure() {
+	m.RecoveriesFailed.Add(1)
+}
+
+// recordRecoveryBlocked increments the circuit-breaker counter.
+func (m *Metrics) recordRecoveryBlocked() {
+	m.RecoveriesBlocked.Add(1)
+}
+
+// recordSuspicion increments the suspected-node counter.
+func (m *Metrics) recordSuspicion() {
+	m.NodesSuspected.Add(1)
+}
+
+// recordSuspicionCleared counts a transient failure that healed before
+// reaching the failure threshold.
+func (m *Metrics) recordSuspicionCleared() {
+	m.NodesRecoveredFromSuspicion.Add(1)
 }
 
 // LastReconciliation returns the wall-clock time of the most recent completed

@@ -71,7 +71,7 @@ func (p InfrastructurePhase) Terminal() bool {
 // InfrastructureSpec is the declarative desired state of an infrastructure
 // deployment. It is provider-agnostic and carries no Terraform concepts.
 type InfrastructureSpec struct {
-	Name     string
+	Name      string
 	NodeCount int
 	CPU       int
 	MemoryMB  int
@@ -122,25 +122,25 @@ type InfrastructureNode struct {
 
 // InfrastructureStatus is the observed state of an infrastructure deployment.
 type InfrastructureStatus struct {
-	Phase           InfrastructurePhase
-	Nodes           []InfrastructureNode
-	LastOperation   string
-	Error           string
-	BootstrapState  BootstrapPhase
+	Phase          InfrastructurePhase
+	Nodes          []InfrastructureNode
+	LastOperation  string
+	Error          string
+	BootstrapState BootstrapPhase
 }
 
 // Infrastructure is the aggregate root for a declarative infrastructure
 // deployment.
 type Infrastructure struct {
-	ID                string
-	Spec              InfrastructureSpec
-	Status            InfrastructureStatus
-	CreatedAt         time.Time
-	UpdatedAt         time.Time
-	BootstrapState    BootstrapPhase
-	BootstrapToken    string
+	ID                 string
+	Spec               InfrastructureSpec
+	Status             InfrastructureStatus
+	CreatedAt          time.Time
+	UpdatedAt          time.Time
+	BootstrapState     BootstrapPhase
+	BootstrapToken     string
 	WireGuardPublicKey string
-	PrivateNetworkIP  string
+	PrivateNetworkIP   string
 }
 
 // BootstrapPhase is the lifecycle phase of a node bootstrap operation.
@@ -158,14 +158,14 @@ type BootstrapPhase string
 
 // Bootstrap lifecycle phases.
 const (
-	BootstrapPhasePending      BootstrapPhase = "PENDING"
-	BootstrapPhaseConnecting   BootstrapPhase = "CONNECTING"
-	BootstrapPhasePreparing    BootstrapPhase = "PREPARING"
-	BootstrapPhaseNetworking   BootstrapPhase = "NETWORKING"
-	BootstrapPhaseInstalling   BootstrapPhase = "INSTALLING"
-	BootstrapPhaseRegistering  BootstrapPhase = "REGISTERING"
-	BootstrapPhaseReady        BootstrapPhase = "READY"
-	BootstrapPhaseFailed       BootstrapPhase = "FAILED"
+	BootstrapPhasePending     BootstrapPhase = "PENDING"
+	BootstrapPhaseConnecting  BootstrapPhase = "CONNECTING"
+	BootstrapPhasePreparing   BootstrapPhase = "PREPARING"
+	BootstrapPhaseNetworking  BootstrapPhase = "NETWORKING"
+	BootstrapPhaseInstalling  BootstrapPhase = "INSTALLING"
+	BootstrapPhaseRegistering BootstrapPhase = "REGISTERING"
+	BootstrapPhaseReady       BootstrapPhase = "READY"
+	BootstrapPhaseFailed      BootstrapPhase = "FAILED"
 )
 
 // allBootstrapPhases is the canonical set of valid bootstrap phases.
@@ -201,9 +201,9 @@ type OperationType string
 
 // Provisioning operation types.
 const (
-	OperationPlan    OperationType = "PLAN"
-	OperationApply   OperationType = "APPLY"
-	OperationDestroy OperationType = "DESTROY"
+	OperationPlan      OperationType = "PLAN"
+	OperationApply     OperationType = "APPLY"
+	OperationDestroy   OperationType = "DESTROY"
 	OperationBootstrap OperationType = "BOOTSTRAP"
 )
 

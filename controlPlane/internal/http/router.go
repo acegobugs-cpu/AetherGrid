@@ -50,6 +50,13 @@ func NewRouter(
 	mux.HandleFunc("GET /nodes/{id}/reconciliation/history", reconciliationHandler.History)
 	mux.HandleFunc("GET /reconciliation/status", reconciliationHandler.Status)
 
+	// Phase 9 cluster health and recovery endpoints.
+	mux.HandleFunc("GET /clusters/{id}/health", reconciliationHandler.ClusterHealth)
+	mux.HandleFunc("GET /clusters/{id}/reconciliation", reconciliationHandler.ClusterReconciliation)
+	mux.HandleFunc("GET /clusters/{id}/recovery", reconciliationHandler.ClusterRecovery)
+	mux.HandleFunc("POST /clusters/{id}/reconcile", reconciliationHandler.ClusterReconcile)
+	mux.HandleFunc("POST /clusters/{id}/recovery/reset", reconciliationHandler.ResetNodeRecovery)
+
 	mux.HandleFunc("POST /nodes/{id}/commands", commandHandler.Create)
 	mux.HandleFunc("GET /nodes/{id}/commands", commandHandler.List)
 	mux.HandleFunc("POST /nodes/{id}/commands/{command_id}/result", commandHandler.ReportResult)

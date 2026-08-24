@@ -66,6 +66,12 @@ func (f *fakeNodeRepo) UpdateReconciliation(_ context.Context, node *domain.Node
 	stored.LastReconciliationError = node.LastReconciliationError
 	stored.LastReconciliationDeadline = node.LastReconciliationDeadline
 	stored.ReconciliationAttempts = node.ReconciliationAttempts
+	stored.RecoveryState = node.RecoveryState
+	stored.RecoveryFailure = node.RecoveryFailure
+	stored.RecoveryAttempts = node.RecoveryAttempts
+	stored.LastRecoveryAt = node.LastRecoveryAt
+	stored.NextRetryAt = node.NextRetryAt
+	stored.FailureStreak = node.FailureStreak
 	stored.UpdatedAt = node.UpdatedAt
 	return nil
 }
@@ -128,13 +134,26 @@ func (f *fakeHistory) count() int {
 	return len(f.events)
 }
 
+// countByResult counts persisted rows carrying the given result value.
+func (f *fakeHistory) countByResult(result domain.ReconciliationStatus) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	n := 0
+	for _, event := range f.events {
+		if event.Result == result {
+			n++
+		}
+	}
+	return n
+}
+
 // testEngine builds a Reconciler wired to fakes with an injectable now and a
 // no-op sleep so retries do not actually wait.
 func testEngine(t *testing.T, repo *fakeNodeRepo, dispatcher *fakeDispatcher, cfg Config) (*Reconciler, *fakeHistory) {
 	t.Helper()
 	observer := NewRepositoryObserver(repo, cfg.HeartbeatTimeout, func() time.Time { return nowValue })
 	planner := NewReconciliationPlanner()
-	executor := NewReconciliationExecutor(dispatcher)
+	executor := NewReconciliationExecutor(dispatcher, nil, nil)
 	history := &fakeHistory{}
 	logger := log.New(io.Discard, "", 0)
 
@@ -253,14 +272,23 @@ func TestReconcileSuccessfulRecovery(t *testing.T) {
 	if dispatcher.callCount() != 1 {
 		t.Errorf("expected 1 dispatch, got %d", dispatcher.callCount())
 	}
-	if history.count() != 1 {
-		t.Errorf("expected 1 history row, got %d", history.count())
+	// One cycle result row plus Phase 9 audit rows (RECOVERY_STARTED,
+	// NODE_REJOINED, RECOVERY_COMPLETED) share the history table.
+	if got := history.count(); got < 1 {
+		t.Errorf("expected at least 1 history row, got %d", got)
+	}
+	if got := history.countByResult(domain.ReconciliationReconciled); got != 1 {
+		t.Errorf("expected 1 RECONCILED result row, got %d", got)
+	}
+	if got := history.countByResult(domain.AuditEventResult); got < 2 {
+		t.Errorf("expected recovery audit rows, got %d", got)
 	}
 	if repo.nodes["edge-01"].Status != domain.StatusReady {
 		t.Error("expected node to have recovered to READY")
 	}
 }
 
+// Test 3b — Successful recovery emits the Phase 9 audit trail.
 // Test 4 — Action failure: the action keeps failing and the engine records
 // RECONCILIATION_FAILED with attempts and error.
 func TestReconcileActionFailure(t *testing.T) {
@@ -600,7 +628,7 @@ func TestWorkQueueDedup(t *testing.T) {
 
 // TestExecutorUnsupportedAction — unsupported actions fail explicitly.
 func TestExecutorUnsupportedAction(t *testing.T) {
-	executor := NewReconciliationExecutor(&fakeDispatcher{})
+	executor := NewReconciliationExecutor(&fakeDispatcher{}, nil, nil)
 	err := executor.Execute(context.Background(), Plan{Action: ActionEnableKubernetes})
 	var unsupported *UnsupportedActionError
 	if !errors.As(err, &unsupported) {

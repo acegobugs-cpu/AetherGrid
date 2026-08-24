@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"encoding/json"
 	"log"
 	"net/http"
 	"strconv"
@@ -95,6 +96,73 @@ func (h *ReconciliationHandler) History(w http.ResponseWriter, r *http.Request) 
 // Status handles GET /reconciliation/status.
 func (h *ReconciliationHandler) Status(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, h.reconciler.Status())
+}
+
+// ClusterHealth handles GET /clusters/{id}/health (Phase 9 #98): the
+// aggregate desired-vs-actual health of a managed cluster.
+func (h *ReconciliationHandler) ClusterHealth(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	health, err := h.reconciler.ClusterHealth(r.Context(), id)
+	if err != nil {
+		h.writeServiceError(w, err, "cluster health")
+		return
+	}
+	writeJSON(w, http.StatusOK, health)
+}
+
+// ClusterReconciliation handles GET /clusters/{id}/reconciliation: the
+// per-member reconciliation state of the cluster.
+func (h *ReconciliationHandler) ClusterReconciliation(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	members, err := h.reconciler.ClusterRecovery(r.Context(), id)
+	if err != nil {
+		h.writeServiceError(w, err, "cluster reconciliation")
+		return
+	}
+	writeJSON(w, http.StatusOK, members)
+}
+
+// ClusterRecovery handles GET /clusters/{id}/recovery (Phase 9 #98).
+func (h *ReconciliationHandler) ClusterRecovery(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	members, err := h.reconciler.ClusterRecovery(r.Context(), id)
+	if err != nil {
+		h.writeServiceError(w, err, "cluster recovery")
+		return
+	}
+	writeJSON(w, http.StatusOK, members)
+}
+
+// ClusterReconcile handles POST /clusters/{id}/reconcile (Phase 9 #99):
+// manual reconciliation of every member. It goes through the same
+// observe/compare/plan/execute/verify path and enforces the same policies,
+// locks and confirmation thresholds as automatic reconciliation.
+func (h *ReconciliationHandler) ClusterReconcile(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	results, err := h.reconciler.ReconcileCluster(r.Context(), id)
+	if err != nil {
+		h.writeServiceError(w, err, "cluster reconcile")
+		return
+	}
+	writeJSON(w, http.StatusOK, results)
+}
+
+// ResetNodeRecovery handles POST /clusters/{id}/recovery/reset (Phase 9 #100):
+// an authorized operator clears the circuit breaker so reconciliation may
+// evaluate the failure again. It never executes recovery itself.
+func (h *ReconciliationHandler) ResetNodeRecovery(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		NodeID string `json:"node_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.NodeID == "" {
+		writeError(w, http.StatusBadRequest, "node_id is required")
+		return
+	}
+	if err := h.reconciler.ResetNodeRecovery(r.Context(), body.NodeID); err != nil {
+		h.writeServiceError(w, err, "recovery reset")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "reset", "node_id": body.NodeID})
 }
 
 // writeServiceError maps service/repository errors to consistent HTTP

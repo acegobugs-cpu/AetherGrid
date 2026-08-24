@@ -13,31 +13,52 @@ import (
 // ReconciliationService is the application-level facade over the reconciliation
 // engine. Handlers talk to it; it owns the engine lifecycle.
 type ReconciliationService struct {
-	engine  *reconcile.Reconciler
-	repo    repository.NodeRepository
-	history repository.ReconciliationHistoryRepository
+	engine           *reconcile.Reconciler
+	repo             repository.NodeRepository
+	history          repository.ReconciliationHistoryRepository
+	clusters         repository.ClusterRepository
+	heartbeatTimeout time.Duration
 }
 
 // NewReconciliationService builds the reconciliation engine and its facade.
-// The engine is not started; call Start before serving requests.
+// The engine is not started; call Start before serving requests. The cluster
+// repository may be nil, disabling cluster-level recovery preconditions.
 func NewReconciliationService(
 	cfg reconcile.Config,
 	repo repository.NodeRepository,
 	history repository.ReconciliationHistoryRepository,
 	commands reconcile.CommandDispatcher,
 	logger *log.Logger,
+	clusters repository.ClusterRepository,
 ) *ReconciliationService {
 	observer := reconcile.NewRepositoryObserver(repo, cfg.HeartbeatTimeout, nil)
 	planner := reconcile.NewReconciliationPlanner()
-	executor := reconcile.NewReconciliationExecutor(commands)
+	executor := reconcile.NewReconciliationExecutor(commands, nil, repo)
 
 	engine := reconcile.NewReconciler(observer, planner, executor, repo, history.Create, cfg, logger, nil, nil)
 
 	return &ReconciliationService{
-		engine:  engine,
-		repo:    repo,
-		history: history,
+		engine:           engine,
+		repo:             repo,
+		history:          history,
+		clusters:         clusters,
+		heartbeatTimeout: cfg.HeartbeatTimeout,
 	}
+}
+
+// SetClusterInspector wires the recovery preconditions onto the engine. It
+// must be called before Start when cluster-aware preconditions are wanted.
+func (s *ReconciliationService) SetClusterInspector(inspector reconcile.ClusterInspector) {
+	s.engine.SetClusterInspector(inspector)
+}
+
+// isStale reports whether the node's heartbeat is older than the configured
+// timeout, mirroring the observer's policy for health aggregation.
+func (s *ReconciliationService) isStale(node *domain.Node) bool {
+	if node.LastHeartbeat == nil {
+		return false
+	}
+	return time.Since(*node.LastHeartbeat) > s.heartbeatTimeout
 }
 
 // Start launches the engine's workers and periodic sweep.

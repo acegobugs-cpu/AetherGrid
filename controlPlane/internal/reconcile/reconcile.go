@@ -22,6 +22,9 @@ const (
 	// ActionRecoverNode instructs the executor to recover an offline or
 	// unhealthy node by restarting its agent.
 	ActionRecoverNode = "RECOVER_NODE"
+	// ActionProvisionReplacement instructs the executor to provision a
+	// replacement machine for a confirmed-failed worker (Phase 9).
+	ActionProvisionReplacement = "PROVISION_REPLACEMENT"
 	// ActionEnableKubernetes is reserved for a later phase.
 	ActionEnableKubernetes = "ENABLE_KUBERNETES"
 	// ActionDisableKubernetes is reserved for a later phase.

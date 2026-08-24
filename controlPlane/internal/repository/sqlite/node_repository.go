@@ -88,6 +88,13 @@ func (r *NodeRepository) Create(ctx context.Context, node *domain.Node) error {
 		node.LastReconciliationError,
 		nullableTime(node.LastReconciliationDeadline),
 		node.ReconciliationAttempts,
+		string(node.Role),
+		string(node.RecoveryState),
+		node.RecoveryFailure,
+		node.RecoveryAttempts,
+		nullableTime(node.LastRecoveryAt),
+		nullableTime(node.NextRetryAt),
+		node.FailureStreak,
 		formatTime(node.CreatedAt),
 		formatTime(node.UpdatedAt),
 	)
@@ -104,8 +111,11 @@ func (r *NodeRepository) Create(ctx context.Context, node *domain.Node) error {
 			last_reconciliation, last_successful_reconciliation,
 			last_reconciliation_result, last_reconciliation_action,
 			last_reconciliation_error, last_reconciliation_deadline,
-			reconciliation_attempts, created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			reconciliation_attempts,
+			role, recovery_state, recovery_failure, recovery_attempts,
+			last_recovery_at, next_retry_at, failure_streak,
+			created_at, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		args...,
 	)
 	if err != nil {
@@ -117,10 +127,9 @@ func (r *NodeRepository) Create(ctx context.Context, node *domain.Node) error {
 	return nil
 }
 
-// GetByID returns a single node by UUID.
-func (r *NodeRepository) GetByID(ctx context.Context, id string) (*domain.Node, error) {
-	row := r.db.QueryRowContext(ctx, `
-		SELECT id, name, status, desired_status, location, ip_address,
+// nodeColumns is the fixed projection shared by every nodes SELECT.
+const nodeColumns = `
+		id, name, status, desired_status, location, ip_address,
 		       kubernetes_enabled, kubernetes_minimum_ready_nodes, wireguard_enabled,
 		       kubernetes_available, kubernetes_status, kubernetes_version,
 		       kubernetes_node_count, kubernetes_ready_nodes, kubernetes_not_ready_nodes,
@@ -130,8 +139,15 @@ func (r *NodeRepository) GetByID(ctx context.Context, id string) (*domain.Node, 
 		       last_reconciliation, last_successful_reconciliation,
 		       last_reconciliation_result, last_reconciliation_action,
 		       last_reconciliation_error, last_reconciliation_deadline,
-		       reconciliation_attempts, created_at, updated_at
-		FROM nodes WHERE id = ?`, id)
+		       reconciliation_attempts,
+		       role, recovery_state, recovery_failure, recovery_attempts,
+		       last_recovery_at, next_retry_at, failure_streak,
+		       created_at, updated_at`
+
+// GetByID returns a single node by UUID.
+func (r *NodeRepository) GetByID(ctx context.Context, id string) (*domain.Node, error) {
+	row := r.db.QueryRowContext(ctx,
+		`SELECT `+nodeColumns+` FROM nodes WHERE id = ?`, id)
 
 	node, err := scanNode(row)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -145,19 +161,8 @@ func (r *NodeRepository) GetByID(ctx context.Context, id string) (*domain.Node, 
 
 // GetAll returns every registered node.
 func (r *NodeRepository) GetAll(ctx context.Context) ([]*domain.Node, error) {
-	rows, err := r.db.QueryContext(ctx, `
-		SELECT id, name, status, desired_status, location, ip_address,
-		       kubernetes_enabled, kubernetes_minimum_ready_nodes, wireguard_enabled,
-		       kubernetes_available, kubernetes_status, kubernetes_version,
-		       kubernetes_node_count, kubernetes_ready_nodes, kubernetes_not_ready_nodes,
-		       kubernetes_total_pods, kubernetes_running_pods, kubernetes_failed_pods,
-		       kubernetes_reported_at,
-		       last_heartbeat,
-		       last_reconciliation, last_successful_reconciliation,
-		       last_reconciliation_result, last_reconciliation_action,
-		       last_reconciliation_error, last_reconciliation_deadline,
-		       reconciliation_attempts, created_at, updated_at
-		FROM nodes ORDER BY created_at`)
+	rows, err := r.db.QueryContext(ctx,
+		`SELECT `+nodeColumns+` FROM nodes ORDER BY created_at`)
 	if err != nil {
 		return nil, fmt.Errorf("querying nodes: %w", err)
 	}
@@ -223,8 +228,8 @@ func (r *NodeRepository) Update(ctx context.Context, node *domain.Node) error {
 	return nil
 }
 
-// UpdateReconciliation persists only the reconciliation metadata of a node,
-// leaving status, heartbeat and desired state untouched. It returns
+// UpdateReconciliation persists only the reconciliation and recovery metadata
+// of a node, leaving status, heartbeat and desired state untouched. It returns
 // repository.ErrNotFound if the node does not exist.
 func (r *NodeRepository) UpdateReconciliation(ctx context.Context, node *domain.Node) error {
 	result, err := r.db.ExecContext(ctx, `
@@ -232,7 +237,10 @@ func (r *NodeRepository) UpdateReconciliation(ctx context.Context, node *domain.
 			last_reconciliation = ?, last_successful_reconciliation = ?,
 			last_reconciliation_result = ?, last_reconciliation_action = ?,
 			last_reconciliation_error = ?, last_reconciliation_deadline = ?,
-			reconciliation_attempts = ?, updated_at = ?
+			reconciliation_attempts = ?,
+			recovery_state = ?, recovery_failure = ?, recovery_attempts = ?,
+			last_recovery_at = ?, next_retry_at = ?, failure_streak = ?,
+			updated_at = ?
 		WHERE id = ?`,
 		nullableTime(node.LastReconciliation),
 		nullableTime(node.LastSuccessfulReconciliation),
@@ -241,6 +249,12 @@ func (r *NodeRepository) UpdateReconciliation(ctx context.Context, node *domain.
 		node.LastReconciliationError,
 		nullableTime(node.LastReconciliationDeadline),
 		node.ReconciliationAttempts,
+		string(node.RecoveryState),
+		node.RecoveryFailure,
+		node.RecoveryAttempts,
+		nullableTime(node.LastRecoveryAt),
+		nullableTime(node.NextRetryAt),
+		node.FailureStreak,
 		formatTime(node.UpdatedAt),
 		node.ID,
 	)
@@ -299,6 +313,13 @@ func scanNode(scanner rowScanner) (*domain.Node, error) {
 		lastReconciliationError      string
 		lastReconciliationDeadline   sql.NullString
 		reconciliationAttempts       int
+		role                         string
+		recoveryState                string
+		recoveryFailure              string
+		recoveryAttempts             int
+		lastRecoveryAt               sql.NullString
+		nextRetryAt                  sql.NullString
+		failureStreak                int
 		createdAt                    string
 		updatedAt                    string
 	)
@@ -331,6 +352,13 @@ func scanNode(scanner rowScanner) (*domain.Node, error) {
 		&lastReconciliationError,
 		&lastReconciliationDeadline,
 		&reconciliationAttempts,
+		&role,
+		&recoveryState,
+		&recoveryFailure,
+		&recoveryAttempts,
+		&lastRecoveryAt,
+		&nextRetryAt,
+		&failureStreak,
 		&createdAt,
 		&updatedAt,
 	); err != nil {
@@ -360,6 +388,11 @@ func scanNode(scanner rowScanner) (*domain.Node, error) {
 		LastReconciliationAction:    lastReconciliationAction,
 		LastReconciliationError:     lastReconciliationError,
 		ReconciliationAttempts:      reconciliationAttempts,
+		Role:                        domain.ClusterRole(role),
+		RecoveryState:               domain.RecoveryState(recoveryState),
+		RecoveryFailure:             recoveryFailure,
+		RecoveryAttempts:            recoveryAttempts,
+		FailureStreak:               failureStreak,
 		CreatedAt:                   created,
 		UpdatedAt:                   updated,
 	}
@@ -415,6 +448,20 @@ func scanNode(scanner rowScanner) (*domain.Node, error) {
 			return nil, fmt.Errorf("parsing last_reconciliation_deadline %q: %w", lastReconciliationDeadline.String, err)
 		}
 		node.LastReconciliationDeadline = &value
+	}
+	if lastRecoveryAt.Valid {
+		value, err := parseTime(lastRecoveryAt.String)
+		if err != nil {
+			return nil, fmt.Errorf("parsing last_recovery_at %q: %w", lastRecoveryAt.String, err)
+		}
+		node.LastRecoveryAt = &value
+	}
+	if nextRetryAt.Valid {
+		value, err := parseTime(nextRetryAt.String)
+		if err != nil {
+			return nil, fmt.Errorf("parsing next_retry_at %q: %w", nextRetryAt.String, err)
+		}
+		node.NextRetryAt = &value
 	}
 
 	return node, nil

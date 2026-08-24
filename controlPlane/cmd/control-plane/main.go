@@ -50,13 +50,20 @@ func main() {
 	nodeService := service.NewNodeService(nodeRepo)
 	heartbeatService := service.NewHeartbeatService(nodeRepo)
 	commandService := service.NewCommandService(sqlite.NewCommandRepository(nodeRepo.DB()), nodeRepo)
-	reconciler := service.NewReconciliationService(
+	clusterRepo := sqlite.NewClusterRepository(nodeRepo.DB())
+	clusterOpRepo := sqlite.NewClusterOperationRepository(nodeRepo.DB())
+	reconcilerSvc := service.NewReconciliationService(
 		reconcileConfig(cfg),
 		nodeRepo,
 		sqlite.NewReconciliationRepository(nodeRepo.DB()),
 		commandService,
 		logger,
+		clusterRepo,
 	)
+	// Cluster-aware recovery preconditions (Phase 9 #70): recovery only runs
+	// against AETHER-GRID-managed clusters with no conflicting operation.
+	reconcilerSvc.SetClusterInspector(
+		service.NewClusterInspectorAdapter(clusterRepo, clusterOpRepo, nodeRepo, logger))
 
 	infraRepo := sqlite.NewInfrastructureRepository(nodeRepo.DB())
 	provisioner := terraform.NewProvisioner(
@@ -75,17 +82,17 @@ func main() {
 	)
 
 	clusterService := service.NewClusterService(
-		sqlite.NewClusterRepository(nodeRepo.DB()),
-		sqlite.NewClusterOperationRepository(nodeRepo.DB()),
+		clusterRepo,
+		clusterOpRepo,
 		nodeRepo,
 		nil, // K3sBootstrapper - will be initialized later
 		logger,
 	)
 
-	nodeService.SetReconcileNotifier(reconciler.Notify)
-	heartbeatService.SetReconcileNotifier(reconciler.Notify)
+	nodeService.SetReconcileNotifier(reconcilerSvc.Notify)
+	heartbeatService.SetReconcileNotifier(reconcilerSvc.Notify)
 
-	router := apihandler.NewRouter(nodeService, heartbeatService, reconciler, commandService, infrastructureService, clusterService, logger)
+	router := apihandler.NewRouter(nodeService, heartbeatService, reconcilerSvc, commandService, infrastructureService, clusterService, logger)
 
 	if err := infrastructureService.Recover(ctx); err != nil {
 		logger.Fatalf("recovering infrastructure state: %v", err)
@@ -99,8 +106,8 @@ func main() {
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
-	reconciler.Start()
-	defer reconciler.Stop()
+	reconcilerSvc.Start()
+	defer reconcilerSvc.Stop()
 
 	serverErrors := make(chan error, 1)
 	go func() {
@@ -139,11 +146,25 @@ func ensureParentDir(path string) error {
 // reconcileConfig maps the application configuration onto the engine config.
 func reconcileConfig(cfg config.Config) reconcile.Config {
 	return reconcile.Config{
-		Interval:         cfg.ReconciliationInterval,
-		Workers:          cfg.ReconciliationWorkers,
-		HeartbeatTimeout: cfg.NodeHeartbeatTimeout,
-		MaxRetries:       cfg.ReconciliationMaxRetries,
-		MaxBackoff:       cfg.ReconciliationMaxBackoff,
-		RecoveryTimeout:  cfg.ReconciliationRecoveryTimeout,
+		Interval:                 cfg.ReconciliationInterval,
+		Workers:                  cfg.ReconciliationWorkers,
+		HeartbeatTimeout:         cfg.NodeHeartbeatTimeout,
+		MaxRetries:               cfg.ReconciliationMaxRetries,
+		MaxBackoff:               cfg.ReconciliationMaxBackoff,
+		RecoveryTimeout:          cfg.ReconciliationRecoveryTimeout,
+		FailureConfirmMultiplier: cfg.FailureConfirmMultiplier,
+		RecoveryPolicy: reconcile.RecoveryPolicy{
+			WorkerAutomaticRecovery:       reconcile.BoolPtr(cfg.WorkerRecoveryEnabled),
+			ControlPlaneAutomaticRecovery: reconcile.BoolPtr(cfg.ControlPlaneRecoveryEnabled),
+			MaxRecoveryAttempts:           cfg.MaxRecoveryAttempts,
+			RecoveryBackoff: reconcile.RecoveryBackoff{
+				BaseDelay:     cfg.RecoveryBackoffBase,
+				MaxDelay:      cfg.RecoveryBackoffMax,
+				JitterEnabled: cfg.RecoveryBackoffJitterEnabled,
+			},
+			MaxConcurrentRecoveries:   cfg.MaxConcurrentRecoveries,
+			RecoveryCooldown:          cfg.RecoveryCooldown,
+			MaxReplacementsPerCluster: cfg.MaxReplacementsPerCluster,
+		},
 	}
 }

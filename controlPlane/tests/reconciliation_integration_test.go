@@ -49,7 +49,7 @@ func startReconciliationApp(t *testing.T, cfg reconcile.Config) *reconciliationA
 	logger := log.New(io.Discard, "", 0)
 	commandService := service.NewCommandService(sqlite.NewCommandRepository(repo.DB()), repo)
 	reconciler := service.NewReconciliationService(cfg, repo,
-		sqlite.NewReconciliationRepository(repo.DB()), commandService, logger)
+		sqlite.NewReconciliationRepository(repo.DB()), commandService, logger, nil)
 
 	nodeService := service.NewNodeService(repo)
 	heartbeatService := service.NewHeartbeatService(repo)

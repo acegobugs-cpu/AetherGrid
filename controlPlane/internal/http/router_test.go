@@ -57,12 +57,13 @@ func newTestApp(t *testing.T) *testApp {
 
 	logger := log.New(io.Discard, "", 0)
 	commandService := service.NewCommandService(sqlite.NewCommandRepository(repo.DB()), repo)
+	clusterRepo := sqlite.NewClusterRepository(repo.DB())
 	reconciler := service.NewReconciliationService(testReconcileConfig, repo,
-		sqlite.NewReconciliationRepository(repo.DB()), commandService, logger)
+		sqlite.NewReconciliationRepository(repo.DB()), commandService, logger, clusterRepo)
 
 	infraRepo := sqlite.NewInfrastructureRepository(repo.DB())
 	clusterService := service.NewClusterService(
-		sqlite.NewClusterRepository(repo.DB()),
+		clusterRepo,
 		sqlite.NewClusterOperationRepository(repo.DB()),
 		repo,
 		nil,

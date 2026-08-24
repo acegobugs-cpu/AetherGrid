@@ -87,6 +87,59 @@ type Difference struct {
 	Actual  any    `json:"actual"`
 }
 
+// FailureClassification categorizes the type of failure for targeted recovery.
+type FailureClassification string
+
+// Failure categories that determine recovery strategy.
+const (
+	FailureInfrastructure FailureClassification = "INFRASTRUCTURE"
+	FailureNetwork        FailureClassification = "NETWORK"
+	FailureAgent          FailureClassification = "AGENT"
+	FailureKubernetes     FailureClassification = "KUBERNETES"
+	FailureConfiguration  FailureClassification = "CONFIGURATION"
+	FailureAuthentication FailureClassification = "AUTHENTICATION"
+	FailureUnknown        FailureClassification = "UNKNOWN"
+)
+
+// RecoveryState is the persistent recovery state of a node.
+type RecoveryState string
+
+// Recovery state machine.
+const (
+	RecoveryNotRequired      RecoveryState = "NOT_REQUIRED"
+	RecoverySuspected        RecoveryState = "SUSPECTED"
+	RecoveryConfirmedFailure RecoveryState = "CONFIRMED_FAILURE"
+	RecoveryQueued           RecoveryState = "RECOVERY_QUEUED"
+	RecoveryRecovering       RecoveryState = "RECOVERING"
+	RecoveryVerification     RecoveryState = "VERIFICATION"
+	RecoveryRecovered        RecoveryState = "RECOVERED"
+	RecoveryFailed           RecoveryState = "RECOVERY_FAILED"
+	RecoveryBlocked          RecoveryState = "RECOVERY_BLOCKED"
+)
+
+// allRecoveryStates is the canonical set of valid recovery states.
+var allRecoveryStates = []RecoveryState{
+	RecoveryNotRequired,
+	RecoverySuspected,
+	RecoveryConfirmedFailure,
+	RecoveryQueued,
+	RecoveryRecovering,
+	RecoveryVerification,
+	RecoveryRecovered,
+	RecoveryFailed,
+	RecoveryBlocked,
+}
+
+// Valid reports whether s is a known recovery state.
+func (r RecoveryState) Valid() bool {
+	for _, candidate := range allRecoveryStates {
+		if r == candidate {
+			return true
+		}
+	}
+	return false
+}
+
 // CompareStates compares a desired state against an observed actual state and
 // returns one Difference per differing field. A nil/empty result means the
 // states are in sync.
