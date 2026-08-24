@@ -417,6 +417,38 @@ The suite includes:
 
 ---
 
+## Phase 10: Security Hardening
+
+The API is no longer anonymous. Every request is authenticated with a bearer
+credential and authorized against a role policy; security-relevant outcomes
+are audited. Highlights:
+
+- **Machine identity** — agents authenticate with per-node credentials
+  (`agr_...`), stored only as SHA-256 hashes. Registration uses single-use,
+  short-lived **bootstrap tokens** issued at provisioning time and exchanged
+  at `POST /nodes/{id}/register`. Rotation (`POST .../credentials/rotate`)
+  and revocation (`DELETE .../credentials`) complete the lifecycle.
+- **Human access** — static API keys from `AUTH_STATIC_KEYS` map to the
+  `admin` / `operator` / `viewer` roles.
+- **Authorization** — a per-route policy table enforces least privilege;
+  agents are strictly scoped to their own node (identity spoofing is
+  rejected).
+- **Transport & startup** — `AETHERGRID_ENV=production` refuses to start
+  without TLS and human keys; development overrides are explicit.
+- **Defenses** — request IDs, security headers, 1 MiB body cap, rate limits
+  on registration/mutation routes, strict input validation, and an
+  append-only audit trail (`audit_events` + structured `AUDIT` log lines).
+
+See [docs/security.md](docs/security.md) for the threat model, trust
+boundaries, credential lifecycle, incident procedure and known limitations.
+
+### Configuration
+
+Copy `.env.example` to `.env` (gitignored) and adjust. Real credentials must
+never be committed.
+
+---
+
 ## Design Decisions
 
 See [docs/architecture.md](docs/architecture.md) for the full rationale, including why the major alternatives were not selected.

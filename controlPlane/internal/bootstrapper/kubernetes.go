@@ -62,6 +62,10 @@ type ClusterJoinInfo struct {
 	Endpoint  string
 	Token     string
 	TokenHash string
+	// CACertificate is the cluster's certificate authority bundle in PEM
+	// form (Phase 10). Kubeconfigs built from this join info validate the
+	// API server against it instead of skipping TLS verification.
+	CACertificate string
 }
 
 // ClusterStatusInfo is the authoritative Kubernetes runtime state observed

@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"AetherGrid/controlPlane/internal/audit"
+	"AetherGrid/controlPlane/internal/auth"
 	"AetherGrid/controlPlane/internal/domain"
 	apihandler "AetherGrid/controlPlane/internal/http"
 	"AetherGrid/controlPlane/internal/provisioning"
@@ -39,6 +41,14 @@ type testApp struct {
 	server *httptest.Server
 	dbPath string
 	repo   *sqlite.NodeRepository
+
+	credentials *auth.Service
+
+	// Static API keys for each human role, plus issued agent/bootstrap
+	// credential tracking used by security tests.
+	adminToken    string
+	operatorToken string
+	viewerToken   string
 }
 
 func newTestApp(t *testing.T) *testApp {
@@ -78,24 +88,65 @@ func newTestApp(t *testing.T) *testApp {
 		logger,
 	)
 
+	staticKeys, err := auth.NewStaticKeyStore([]string{
+		testAdminKey + ":admin",
+		testOperatorKey + ":operator",
+		testViewerKey + ":viewer",
+	})
+	if err != nil {
+		t.Fatalf("building static key store: %v", err)
+	}
+	credentials := auth.NewService(sqlite.NewCredentialRepository(repo.DB()))
+	auditor := audit.NewLogger(logger, sqlite.NewAuditRepository(repo.DB()))
+
 	router := apihandler.NewRouter(
-		service.NewNodeService(repo),
-		service.NewHeartbeatService(repo),
-		reconciler,
-		commandService,
-		infrastructureService,
-		clusterService,
+		apihandler.Services{
+			Nodes:           service.NewNodeService(repo),
+			Heartbeats:      service.NewHeartbeatService(repo),
+			Reconciler:      reconciler,
+			Commands:        commandService,
+			Infrastructures: infrastructureService,
+			Clusters:        clusterService,
+		},
+		apihandler.Security{
+			Credentials:      credentials,
+			StaticKeys:       staticKeys,
+			Auditor:          auditor,
+			OpenRegistration: false,
+		},
 		logger,
 	)
 	server := httptest.NewServer(router)
 	t.Cleanup(server.Close)
 
-	return &testApp{server: server, dbPath: dbPath, repo: repo}
+	return &testApp{
+		server:        server,
+		dbPath:        dbPath,
+		repo:          repo,
+		credentials:   credentials,
+		adminToken:    testAdminKey,
+		operatorToken: testOperatorKey,
+		viewerToken:   testViewerKey,
+	}
 }
 
-// request performs an HTTP request against the test server and returns the
-// response plus the decoded JSON body (any shape).
+// Test-only static API keys. These are fake development credentials and must
+// never be used in a real deployment.
+const (
+	testAdminKey    = "test-admin-key-0001"
+	testOperatorKey = "test-operator-key-002"
+	testViewerKey   = "test-viewer-key-0033"
+)
+
+// request performs an authenticated (admin by default) HTTP request against
+// the test server and returns the response plus the decoded JSON body.
 func (a *testApp) request(t *testing.T, method, path string, body any) (*http.Response, any) {
+	return a.requestAs(t, a.adminToken, method, path, body)
+}
+
+// requestAs performs a request carrying the given bearer token (empty string
+// sends no Authorization header at all).
+func (a *testApp) requestAs(t *testing.T, token, method, path string, body any) (*http.Response, any) {
 	t.Helper()
 
 	var reader io.Reader
@@ -113,6 +164,9 @@ func (a *testApp) request(t *testing.T, method, path string, body any) (*http.Re
 	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
+	}
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
 	}
 
 	resp, err := a.server.Client().Do(req)

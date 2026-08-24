@@ -12,6 +12,8 @@ import (
 	"syscall"
 	"time"
 
+	"AetherGrid/controlPlane/internal/audit"
+	"AetherGrid/controlPlane/internal/auth"
 	"AetherGrid/controlPlane/internal/config"
 	apihandler "AetherGrid/controlPlane/internal/http"
 	"AetherGrid/controlPlane/internal/provisioning"
@@ -26,8 +28,22 @@ func main() {
 	logger := log.New(os.Stdout, "[aether-grid] ", log.LstdFlags)
 
 	cfg := config.FromEnv()
-	logger.Printf("starting aether-grid control plane (host=%s port=%s db=%s)",
-		cfg.ServerHost, cfg.ServerPort, cfg.DatabasePath)
+
+	// Phase 10 secure startup: fail fast on unsafe configuration instead of
+	// silently running an insecure production deployment.
+	if err := cfg.Validate(); err != nil {
+		logger.Fatalf("invalid security configuration: %v", err)
+	}
+
+	logger.Printf("starting aether-grid control plane (host=%s port=%s db=%s env=%s tls=%s)",
+		cfg.ServerHost, cfg.ServerPort, cfg.DatabasePath, cfg.Environment,
+		map[bool]string{true: "enabled", false: "disabled"}[cfg.TLSEnabled()])
+	if !cfg.Production() {
+		logger.Printf("DEVELOPMENT environment: explicit overrides are active; production requires AETHERGRID_ENV=production")
+	}
+	if cfg.OpenRegistration {
+		logger.Printf("WARNING: anonymous self-registration is ENABLED (development only)")
+	}
 
 	if err := ensureParentDir(cfg.DatabasePath); err != nil {
 		logger.Fatalf("preparing database directory: %v", err)
@@ -38,6 +54,7 @@ func main() {
 		logger.Fatalf("opening database: %v", err)
 	}
 	defer nodeRepo.Close()
+	restrictDBPermissions(cfg.DatabasePath, logger)
 	logger.Printf("database initialized: %s", cfg.DatabasePath)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -46,6 +63,23 @@ func main() {
 		logger.Fatalf("applying migrations: %v", err)
 	}
 	logger.Printf("database migrations applied")
+
+	// Phase 10: credential lifecycle and audit trail.
+	credentialRepo := sqlite.NewCredentialRepository(nodeRepo.DB())
+	credentials := auth.NewService(credentialRepo)
+	credentials.BootstrapTokenTTL = cfg.BootstrapTokenTTL
+	credentials.AgentCredentialTTL = cfg.AgentCredentialTTL
+
+	staticKeys, err := auth.NewStaticKeyStore(cfg.StaticAuthKeys)
+	if err != nil {
+		logger.Fatalf("invalid static API keys: %v", err)
+	}
+	if cfg.Production() && !hasRole(staticKeys, auth.RoleAdmin) {
+		logger.Fatalf("production requires at least one admin static key")
+	}
+
+	auditRepo := sqlite.NewAuditRepository(nodeRepo.DB())
+	auditor := audit.NewLogger(logger, auditRepo)
 
 	nodeService := service.NewNodeService(nodeRepo)
 	heartbeatService := service.NewHeartbeatService(nodeRepo)
@@ -92,7 +126,24 @@ func main() {
 	nodeService.SetReconcileNotifier(reconcilerSvc.Notify)
 	heartbeatService.SetReconcileNotifier(reconcilerSvc.Notify)
 
-	router := apihandler.NewRouter(nodeService, heartbeatService, reconcilerSvc, commandService, infrastructureService, clusterService, logger)
+	router := apihandler.NewRouter(
+		apihandler.Services{
+			Nodes:           nodeService,
+			Heartbeats:      heartbeatService,
+			Reconciler:      reconcilerSvc,
+			Commands:        commandService,
+			Infrastructures: infrastructureService,
+			Clusters:        clusterService,
+		},
+		apihandler.Security{
+			Credentials:      credentials,
+			StaticKeys:       staticKeys,
+			Auditor:          auditor,
+			OpenRegistration: cfg.OpenRegistration,
+			TLSEnabled:       cfg.TLSEnabled(),
+		},
+		logger,
+	)
 
 	if err := infrastructureService.Recover(ctx); err != nil {
 		logger.Fatalf("recovering infrastructure state: %v", err)
@@ -104,6 +155,9 @@ func main() {
 		Addr:              cfg.ListenAddress(),
 		Handler:           router,
 		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      60 * time.Second,
+		IdleTimeout:       120 * time.Second,
 	}
 
 	reconcilerSvc.Start()
@@ -111,7 +165,12 @@ func main() {
 
 	serverErrors := make(chan error, 1)
 	go func() {
-		logger.Printf("listening on %s", cfg.ListenAddress())
+		if cfg.TLSEnabled() {
+			logger.Printf("listening on https://%s", cfg.ListenAddress())
+			serverErrors <- server.ListenAndServeTLS(cfg.TLSCertFile, cfg.TLSKeyFile)
+			return
+		}
+		logger.Printf("listening on http://%s", cfg.ListenAddress())
 		serverErrors <- server.ListenAndServe()
 	}()
 
@@ -135,12 +194,34 @@ func main() {
 	logger.Printf("aether-grid control plane stopped")
 }
 
+// restrictDBPermissions tightens permissions on the SQLite database files so
+// only the control plane's user can read them.
+func restrictDBPermissions(dbPath string, logger *log.Logger) {
+	for _, path := range []string{dbPath, dbPath + "-wal", dbPath + "-shm"} {
+		if _, err := os.Stat(path); err == nil {
+			if err := os.Chmod(path, 0o600); err != nil {
+				logger.Printf("restricting database permissions for %s: %v", path, err)
+			}
+		}
+	}
+}
+
+// hasRole reports whether the store contains at least one key of the role.
+func hasRole(store *auth.StaticKeyStore, role auth.Role) bool {
+	for _, candidate := range store.Roles() {
+		if candidate == role {
+			return true
+		}
+	}
+	return false
+}
+
 func ensureParentDir(path string) error {
 	dir := filepath.Dir(path)
 	if dir == "." {
 		return nil
 	}
-	return os.MkdirAll(dir, 0o755)
+	return os.MkdirAll(dir, 0o700)
 }
 
 // reconcileConfig maps the application configuration onto the engine config.

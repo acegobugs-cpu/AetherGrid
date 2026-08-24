@@ -166,3 +166,44 @@ func TestValidate(t *testing.T) {
 		})
 	}
 }
+
+// Phase 10: plaintext HTTP to non-loopback control planes must be refused
+// unless the explicit development override is set.
+func TestValidateTransportSecurity(t *testing.T) {
+	valid := Config{
+		ControlPlaneURL:          "https://control.example.com",
+		NodeName:                 "edge-01",
+		NodeLocation:             "addis-01",
+		DataDir:                  "./data",
+		HeartbeatInterval:        10 * time.Second,
+		StateReportInterval:      30 * time.Second,
+		CommandPollInterval:      5 * time.Second,
+		CommandTimeout:           30 * time.Second,
+		InitialBackoff:           1 * time.Second,
+		MaxBackoff:               30 * time.Second,
+		ListenAddr:               "127.0.0.1:9090",
+		KubernetesRequestTimeout: 10 * time.Second,
+	}
+	if err := valid.Validate(); err != nil {
+		t.Fatalf("HTTPS control plane must validate, got %v", err)
+	}
+
+	loopback := valid
+	loopback.ControlPlaneURL = "http://localhost:8080"
+	if err := loopback.Validate(); err != nil {
+		t.Fatalf("loopback HTTP must validate without overrides, got %v", err)
+	}
+
+	insecure := valid
+	insecure.ControlPlaneURL = "http://192.168.1.10:8080"
+	if err := insecure.Validate(); err == nil {
+		t.Fatal("plaintext HTTP to a routable address must be refused")
+	}
+
+	override := insecure
+	override.AllowSelfRegistration = false
+	t.Setenv("AGENT_ALLOW_INSECURE_TRANSPORT", "true")
+	if err := override.Validate(); err != nil {
+		t.Fatalf("explicit insecure-transport override must be honored, got %v", err)
+	}
+}

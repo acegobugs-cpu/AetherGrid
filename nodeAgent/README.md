@@ -200,7 +200,7 @@ See [docs/architecture.md](docs/architecture.md) for the full rationale, includi
 
 - Language: **Go**
 - Protocol: **HTTP/JSON** (matches the Phase 1 control-plane API)
-- Identity: **UUID assigned by the control plane**, persisted as a local file
+- Identity: **cryptographic credential bound to a control-plane-assigned node ID** (Phase 10). The agent exchanges a single-use bootstrap token (`AETHER_BOOTSTRAP_TOKEN` + `NODE_ID`) for its long-lived credential, persists both under `AGENT_DATA_DIR` with mode 0600, and sends the credential as a bearer token on every request. A rejected or revoked credential stops the agent (fail closed) instead of silently re-registering; self-registration exists only for development control planes with explicit open registration. Plaintext HTTP to non-loopback addresses is refused unless `AGENT_ALLOW_INSECURE_TRANSPORT=true`.
 - State reporting: `status` + `ip_address` plus the observed Kubernetes summary (Phase 4) are sent to the control plane; detailed machine state stays local
 - Retry: **exponential backoff** for all network operations
 - Concurrency: **goroutines + context** for three independent loops

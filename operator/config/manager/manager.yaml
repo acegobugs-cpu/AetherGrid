@@ -35,6 +35,12 @@ spec:
               name: metrics
             - containerPort: 8081
               name: health
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
           livenessProbe:
             httpGet:
               path: /healthz

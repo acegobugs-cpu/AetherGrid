@@ -169,6 +169,10 @@ func (p *Provisioner) GetNetworkStatus(ctx context.Context) (lastHandshake *time
 
 // ConfigureNode applies a complete WireGuard node configuration: local address,
 // private key, and peer(s).
+//
+// Phase 10: the private key is delivered to `wg setconf` through stdin as a
+// temporary config file descriptor instead of a command-line argument, so it
+// never appears in process listings.
 func (p *Provisioner) ConfigureNode(ctx context.Context, address, privateKey, peerPublicKey, endpoint string, allowedIPs string, persistentKeepalive time.Duration) error {
 	// Bring interface down first
 	_, stderr, err := p.run(ctx, "set", "interface", "address", "0.0.0.0/0")
@@ -176,10 +180,9 @@ func (p *Provisioner) ConfigureNode(ctx context.Context, address, privateKey, pe
 		// Non-fatal if interface has no address; continue
 	}
 
-	// Set the private key
-	_, stderr, err = p.run(ctx, "set", "interface", "private-key", privateKey)
-	if err != nil {
-		return fmt.Errorf("running wg set interface private-key: %s: %w", stderr, err)
+	// Set the private key via wg setconf reading the key from stdin.
+	if err := p.setPrivateKey(ctx, privateKey); err != nil {
+		return err
 	}
 
 	// Set the listen port/address is not directly settable via `wg`; the
@@ -217,6 +220,27 @@ func (p *Provisioner) ConfigureNode(ctx context.Context, address, privateKey, pe
 		return fmt.Errorf("running wg set interface auto: %s: %w", stderr, err)
 	}
 
+	return nil
+}
+
+// setPrivateKey applies privateKey to the WireGuard interface by piping a
+// minimal configuration through stdin to `wg setconf <interface> /dev/stdin`.
+// The private key is never passed as an argument, so it cannot leak into
+// process listings.
+func (p *Provisioner) setPrivateKey(ctx context.Context, privateKey string) error {
+	cmdCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	// wg setconf replaces the whole configuration; supplying only the private
+	// key section keeps peers intact while avoiding the key in argv.
+	cmd := exec.CommandContext(cmdCtx, p.bin, "setconf", "interface", "/dev/stdin")
+	cmd.Stdin = strings.NewReader("PrivateKey = " + privateKey + "\n")
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("applying wireguard private key via setconf: %s: %w", stderr.String(), err)
+	}
 	return nil
 }
 

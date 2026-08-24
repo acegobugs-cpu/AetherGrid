@@ -24,6 +24,10 @@ type fakeClient struct {
 	registerInput   client.RegisterInput
 	registerResult  client.RegisterResult
 	registerErr     error
+	exchangeCalls   int
+	exchangeToken   string
+	exchangeErr     error
+	credentials     []string // tokens installed via SetToken
 	heartbeats      int
 	heartbeatErr    error
 	getNodeCalls    int
@@ -45,7 +49,7 @@ type commandReport struct {
 
 func newFakeClient() *fakeClient {
 	return &fakeClient{
-		registerResult: client.RegisterResult{NodeID: "node-1", Status: "PROVISIONING"},
+		registerResult: client.RegisterResult{NodeID: "node-1", Status: "PROVISIONING", Credential: "agr_bootstrap_node1"},
 		getNodeResult:  client.NodeInfo{ID: "node-1", Name: "edge-01", Status: "PROVISIONING", DesiredStatus: "READY"},
 		desiredResult:  client.DesiredState{NodeID: "node-1", DesiredStatus: "READY"},
 	}
@@ -57,6 +61,24 @@ func (f *fakeClient) Register(_ context.Context, input client.RegisterInput) (cl
 	f.registerCalls++
 	f.registerInput = input
 	return f.registerResult, f.registerErr
+}
+
+func (f *fakeClient) ExchangeBootstrap(_ context.Context, nodeID, bootstrapToken string, _ client.RegisterInput) (client.RegisterResult, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.exchangeCalls++
+	f.exchangeToken = bootstrapToken
+	if f.exchangeErr != nil {
+		return client.RegisterResult{}, f.exchangeErr
+	}
+	return client.RegisterResult{NodeID: nodeID, Status: "PROVISIONING", Credential: "agr_agent_" + nodeID}, nil
+}
+
+// SetToken records credential installation, mirroring the real HTTP client.
+func (f *fakeClient) SetToken(token string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.credentials = append(f.credentials, token)
 }
 
 func (f *fakeClient) Heartbeat(_ context.Context, _ string) error {
@@ -157,18 +179,19 @@ func (f *fakeCollector) Collect(_ context.Context) (state.NodeState, error) {
 func testConfig(t *testing.T, dataDir string) config.Config {
 	t.Helper()
 	return config.Config{
-		ControlPlaneURL:     "http://control-plane.invalid:8080",
-		NodeName:            "edge-01",
-		NodeLocation:        "addis-01",
-		DataDir:             dataDir,
-		HeartbeatInterval:   15 * time.Millisecond,
-		StateReportInterval: 25 * time.Millisecond,
-		CommandPollInterval: 15 * time.Millisecond,
-		CommandTimeout:      time.Second,
-		InitialBackoff:      5 * time.Millisecond,
-		MaxBackoff:          40 * time.Millisecond,
-		ListenAddr:          "127.0.0.1:0",
-		Version:             "test",
+		ControlPlaneURL:       "http://localhost:8080",
+		NodeName:              "edge-01",
+		NodeLocation:          "addis-01",
+		DataDir:               dataDir,
+		HeartbeatInterval:     15 * time.Millisecond,
+		StateReportInterval:   25 * time.Millisecond,
+		CommandPollInterval:   15 * time.Millisecond,
+		CommandTimeout:        time.Second,
+		InitialBackoff:        5 * time.Millisecond,
+		MaxBackoff:            40 * time.Millisecond,
+		ListenAddr:            "127.0.0.1:0",
+		Version:               "test",
+		AllowSelfRegistration: true, // tests exercise the development open-registration flow
 	}
 }
 
@@ -413,27 +436,40 @@ func TestAgentExecutesCommand(t *testing.T) {
 	<-done
 }
 
-func TestAgentReRegistersWhenIdentityUnknown(t *testing.T) {
+// TestAgentFailsClosedWhenNodeUnknown replaces the old re-registration
+// behavior (Phase 10): a node deleted from the control plane had its
+// credentials revoked with it, so the agent must refuse to start rather than
+// silently minting a new identity.
+func TestAgentFailsClosedWhenNodeUnknown(t *testing.T) {
+	dataDir := t.TempDir()
 	fake := newFakeClient()
-	a := newTestAgent(t, testConfig(t, t.TempDir()), fake)
 
-	// First run registers normally, then the control plane forgets the node.
-	cancel, done := runAgent(t, a)
+	// First run registers normally.
+	first := newTestAgent(t, testConfig(t, dataDir), fake)
+	cancel, done := runAgent(t, first)
 	waitFor(t, "first registration", func() bool { return fake.registerCount() >= 1 })
+	waitFor(t, "credential installed", func() bool { return fake.exchangeCalls >= 1 })
 	cancel()
 	<-done
 
-	// On restart the persisted identity is unknown to the control plane, so
-	// the agent must re-register.
+	// Second run: the control plane no longer knows the node.
 	fake.getNodeErr = client.ErrNotFound
-	fake.registerResult = client.RegisterResult{NodeID: "node-2", Status: "PROVISIONING"}
 
-	second := newTestAgent(t, testConfig(t, t.TempDir()), fake)
-	cancel2, done2 := runAgent(t, second)
-	waitFor(t, "re-registration", func() bool { return fake.registerCount() >= 2 })
-	waitFor(t, "new identity", func() bool { return second.currentNodeID() == "node-2" })
-	cancel2()
-	<-done2
+	second := newTestAgent(t, testConfig(t, dataDir), fake)
+	_, done2 := runAgent(t, second)
+
+	select {
+	case err := <-done2:
+		if err == nil {
+			t.Fatal("expected agent to fail closed for an unknown node")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("agent did not exit after identity loss")
+	}
+
+	if fake.registerCount() != 1 {
+		t.Errorf("agent must not re-register after identity loss; got %d registrations", fake.registerCount()-1+1)
+	}
 }
 
 func TestAgentRestartCommandShutsDown(t *testing.T) {

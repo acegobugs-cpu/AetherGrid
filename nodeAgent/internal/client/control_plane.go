@@ -21,9 +21,19 @@ import (
 // 404, for example when a persisted node identity is unknown.
 var ErrNotFound = errors.New("node not found")
 
+// ErrUnauthorized is returned when the control plane rejects the agent's
+// credential (401). This typically means the credential was revoked or
+// expired; the agent must fail closed rather than attempt to re-register.
+var ErrUnauthorized = errors.New("credential rejected by control plane")
+
 // IsNotFound reports whether err represents a 404 from the control plane.
 func IsNotFound(err error) bool {
 	return errors.Is(err, ErrNotFound)
+}
+
+// IsUnauthorized reports whether err represents a 401 from the control plane.
+func IsUnauthorized(err error) bool {
+	return errors.Is(err, ErrUnauthorized)
 }
 
 // APIError describes a non-success response from the control plane.
@@ -53,6 +63,9 @@ type RegisterInput struct {
 type RegisterResult struct {
 	NodeID string
 	Status string
+	// Credential is the long-lived agent credential. It is shown exactly
+	// once by the control plane and must be persisted immediately.
+	Credential string
 }
 
 // NodeInfo is the control plane's current view of a node.
@@ -104,6 +117,7 @@ type StateReport struct {
 // so tests can substitute a fake implementation.
 type ControlPlaneClient interface {
 	Register(ctx context.Context, input RegisterInput) (RegisterResult, error)
+	ExchangeBootstrap(ctx context.Context, nodeID, bootstrapToken string, input RegisterInput) (RegisterResult, error)
 	Heartbeat(ctx context.Context, nodeID string) error
 	GetNode(ctx context.Context, nodeID string) (NodeInfo, error)
 	ReportState(ctx context.Context, nodeID string, report StateReport) error
@@ -112,12 +126,13 @@ type ControlPlaneClient interface {
 	ReportCommandResult(ctx context.Context, nodeID, commandID string, result CommandResult) error
 }
 
-// Client is the HTTP implementation of ControlPlaneClient.
+// Client is the HTTP implementation of ControlPlaneClient. Every request it
+// sends carries the agent credential as an Authorization bearer token.
 type Client struct {
 	baseURL string
 	http    *http.Client
-	// token is reserved for future authentication. When set, it is attached
-	// as an Authorization header on every request.
+	// token is the node credential attached to every request. It is empty
+	// only before registration.
 	token string
 }
 
@@ -149,7 +164,12 @@ func New(baseURL string, options ...Option) *Client {
 	return client
 }
 
-// Register POSTs /nodes and returns the assigned identity.
+// SetToken installs the credential used for all subsequent requests.
+func (c *Client) SetToken(token string) { c.token = token }
+
+// Register POSTs /nodes and returns the assigned identity. This is only
+// available against control planes with explicitly enabled development
+// registration; production deployments use ExchangeBootstrap.
 func (c *Client) Register(ctx context.Context, input RegisterInput) (RegisterResult, error) {
 	payload := struct {
 		Name              string `json:"name"`
@@ -165,11 +185,48 @@ func (c *Client) Register(ctx context.Context, input RegisterInput) (RegisterRes
 		WireGuardEnabled:  input.WireGuardEnabled,
 	}
 
-	var response nodeResponse
+	var response registerResponse
 	if err := c.do(ctx, http.MethodPost, "/nodes", payload, &response); err != nil {
 		return RegisterResult{}, err
 	}
-	return RegisterResult{NodeID: response.ID, Status: response.Status}, nil
+	return RegisterResult{
+		NodeID:     response.ID,
+		Status:     response.Status,
+		Credential: response.BootstrapToken,
+	}, nil
+}
+
+// ExchangeBootstrap performs the secure registration exchange:
+// POST /nodes/{id}/register authenticated by a single-use bootstrap token.
+// The control plane consumes the bootstrap token and returns the long-lived
+// agent credential.
+func (c *Client) ExchangeBootstrap(ctx context.Context, nodeID, bootstrapToken string, input RegisterInput) (RegisterResult, error) {
+	var payload any
+	if input != (RegisterInput{}) {
+		payload = struct {
+			Name              string `json:"name"`
+			Location          string `json:"location"`
+			IPAddress         string `json:"ip_address"`
+			KubernetesEnabled bool   `json:"kubernetes_enabled"`
+			WireGuardEnabled  bool   `json:"wireguard_enabled"`
+		}{
+			Name:              input.Name,
+			Location:          input.Location,
+			IPAddress:         input.IPAddress,
+			KubernetesEnabled: input.KubernetesEnabled,
+			WireGuardEnabled:  input.WireGuardEnabled,
+		}
+	}
+
+	var response struct {
+		NodeID     string `json:"node_id"`
+		Status     string `json:"status"`
+		Credential string `json:"credential"`
+	}
+	if err := c.doWithToken(ctx, bootstrapToken, http.MethodPost, "/nodes/"+nodeID+"/register", payload, &response); err != nil {
+		return RegisterResult{}, err
+	}
+	return RegisterResult{NodeID: response.NodeID, Status: response.Status, Credential: response.Credential}, nil
 }
 
 // Heartbeat POSTs /nodes/{id}/heartbeat.
@@ -242,10 +299,18 @@ func (c *Client) ReportCommandResult(ctx context.Context, nodeID, commandID stri
 	return c.do(ctx, http.MethodPost, "/nodes/"+nodeID+"/commands/"+commandID+"/result", payload, nil)
 }
 
-// do performs an HTTP request against the control plane, optionally
-// marshalling a JSON body and decoding the JSON response. Non-2xx statuses
-// become errors; 404 becomes ErrNotFound.
+// do performs an authenticated HTTP request against the control plane using
+// the client's node credential, optionally marshalling a JSON body and
+// decoding the JSON response. Non-2xx statuses become errors; 404 becomes
+// ErrNotFound and 401 becomes ErrUnauthorized.
 func (c *Client) do(ctx context.Context, method, path string, body any, out any) error {
+	return c.doWithToken(ctx, c.token, method, path, body, out)
+}
+
+// doWithToken performs a request with an explicit credential (used during the
+// bootstrap exchange where the bootstrap token authenticates instead of the
+// node credential).
+func (c *Client) doWithToken(ctx context.Context, token, method, path string, body any, out any) error {
 	var reader io.Reader
 	if body != nil {
 		payload, err := json.Marshal(body)
@@ -262,8 +327,8 @@ func (c *Client) do(ctx context.Context, method, path string, body any, out any)
 	if body != nil {
 		request.Header.Set("Content-Type", "application/json")
 	}
-	if c.token != "" {
-		request.Header.Set("Authorization", "Bearer "+c.token)
+	if token != "" {
+		request.Header.Set("Authorization", "Bearer "+token)
 	}
 
 	response, err := c.http.Do(request)
@@ -284,6 +349,10 @@ func (c *Client) do(ctx context.Context, method, path string, body any, out any)
 
 	if response.StatusCode == http.StatusNotFound {
 		return fmt.Errorf("%w: %s %s", ErrNotFound, method, path)
+	}
+	if response.StatusCode == http.StatusUnauthorized {
+		message := readErrorBody(response.Body)
+		return fmt.Errorf("%w: %s", ErrUnauthorized, message)
 	}
 
 	message := readErrorBody(response.Body)
@@ -322,6 +391,14 @@ type nodeResponse struct {
 	KubernetesEnabled bool    `json:"kubernetes_enabled"`
 	WireGuardEnabled  bool    `json:"wireguard_enabled"`
 	LastHeartbeat     *string `json:"last_heartbeat"`
+}
+
+// registerResponse mirrors the POST /nodes response shape, which additionally
+// carries the single-use bootstrap credential.
+type registerResponse struct {
+	ID             string `json:"id"`
+	Status         string `json:"status"`
+	BootstrapToken string `json:"bootstrap_token,omitempty"`
 }
 
 // desiredStateResponse mirrors the control plane's desired-state JSON shape.

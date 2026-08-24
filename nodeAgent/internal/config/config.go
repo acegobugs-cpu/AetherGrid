@@ -4,6 +4,7 @@ package config
 
 import (
 	"fmt"
+	"net"
 	"net/url"
 	"os"
 	"strconv"
@@ -50,6 +51,18 @@ type Config struct {
 	// KubernetesRequestTimeout bounds every Kubernetes API call so an
 	// unavailable cluster cannot block the agent.
 	KubernetesRequestTimeout time.Duration
+
+	// BootstrapToken is a single-use registration credential issued by an
+	// operator during provisioning (AETHER_BOOTSTRAP_TOKEN). When set, the
+	// agent exchanges it for its long-lived node credential instead of
+	// self-registering. Production deployments must provision nodes this
+	// way.
+	BootstrapToken string
+	// AllowSelfRegistration permits anonymous self-registration against a
+	// control plane running in development mode with open registration
+	// enabled. It must never be enabled where the control plane refuses
+	// anonymous registrations.
+	AllowSelfRegistration bool
 }
 
 // Defaults used when the corresponding environment variable is not set.
@@ -88,6 +101,8 @@ func FromEnv() Config {
 		KubernetesEnabled:        envBoolOr("KUBERNETES_ENABLED", false),
 		Kubeconfig:               os.Getenv("KUBECONFIG"),
 		KubernetesRequestTimeout: durationEnvOr("KUBERNETES_REQUEST_TIMEOUT", defaultKubernetesTimeout),
+		BootstrapToken:           os.Getenv("AETHER_BOOTSTRAP_TOKEN"),
+		AllowSelfRegistration:    envBoolOr("AUTH_ALLOW_SELF_REGISTRATION", false),
 	}
 }
 
@@ -137,7 +152,27 @@ func (c Config) Validate() error {
 	if c.KubernetesRequestTimeout <= 0 {
 		return fmt.Errorf("KUBERNETES_REQUEST_TIMEOUT must be positive")
 	}
+
+	// Phase 10 transport security: plaintext HTTP is only acceptable to
+	// loopback control planes or with an explicit development override.
+	if parsed.Scheme == "http" && !isLoopbackHost(parsed.Hostname()) {
+		if !envBoolOr("AGENT_ALLOW_INSECURE_TRANSPORT", false) {
+			return fmt.Errorf(
+				"refusing plaintext HTTP to non-loopback control plane %q; use HTTPS or set AGENT_ALLOW_INSECURE_TRANSPORT=true (development only)",
+				parsed.Host)
+		}
+	}
 	return nil
+}
+
+// isLoopbackHost reports whether the host is a loopback address or the
+// literal "localhost".
+func isLoopbackHost(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 func envOr(key, fallback string) string {

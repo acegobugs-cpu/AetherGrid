@@ -10,6 +10,13 @@ operator/operator
 **/data
 /agent/
 
+# Secrets — real credentials must never be committed
+.env
+**/.env
+!.env.example
+*.pem
+*.key
+
 # Editor/OS
 .DS_Store
 *.swp

@@ -28,7 +28,6 @@ type AetherClusterReconciler struct {
 // +kubebuilder:rbac:groups=aether-grid.io,resources=aetherclusters/finalizers,verbs=update
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=apps,resources=deployments/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 
 // Reconcile drives an AetherCluster toward its desired state. The loop is
 // idempotent: every step reads current state from the API and only writes when

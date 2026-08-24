@@ -12,37 +12,56 @@ import (
 	"strings"
 	"time"
 
+	"AetherGrid/controlPlane/internal/audit"
+	"AetherGrid/controlPlane/internal/auth"
 	"AetherGrid/controlPlane/internal/domain"
+	"AetherGrid/controlPlane/internal/http/middleware"
 	"AetherGrid/controlPlane/internal/service"
 
 	"github.com/google/uuid"
 )
 
-// NodeHandler exposes the node lifecycle, heartbeat, state and desired-state
-// endpoints over HTTP.
+// NodeHandler exposes the node lifecycle, heartbeat, state, desired-state,
+// secure registration and credential lifecycle endpoints over HTTP.
 type NodeHandler struct {
-	nodes      *service.NodeService
-	heartbeats *service.HeartbeatService
-	logger     *log.Logger
+	nodes       *service.NodeService
+	heartbeats  *service.HeartbeatService
+	credentials *auth.Service
+	auditor     *audit.Logger
+	logger      *log.Logger
+}
+
+// NodeHandlerDeps carries the handler's dependencies.
+type NodeHandlerDeps struct {
+	Nodes       *service.NodeService
+	Heartbeats  *service.HeartbeatService
+	Credentials *auth.Service
+	Auditor     *audit.Logger
+	Logger      *log.Logger
 }
 
 // NewNodeHandler constructs a NodeHandler with the given services.
-func NewNodeHandler(
-	nodes *service.NodeService,
-	heartbeats *service.HeartbeatService,
-	logger *log.Logger,
-) *NodeHandler {
+func NewNodeHandler(deps NodeHandlerDeps) *NodeHandler {
 	return &NodeHandler{
-		nodes:      nodes,
-		heartbeats: heartbeats,
-		logger:     logger,
+		nodes:       deps.Nodes,
+		heartbeats:  deps.Heartbeats,
+		credentials: deps.Credentials,
+		auditor:     deps.Auditor,
+		logger:      deps.Logger,
 	}
 }
 
-// Create handles POST /nodes.
+// Create handles POST /nodes. The node record is provisioned by an
+// authorized operator (or, in explicitly configured development mode, by the
+// agent itself) and a single-use bootstrap credential is issued. The
+// bootstrap token is returned exactly once and never persisted in plaintext.
 func (h *NodeHandler) Create(w http.ResponseWriter, r *http.Request) {
 	var request createNodeRequest
-	if err := decodeJSON(w, r, &request); err != nil {
+	if !decodeJSON(w, r, &request) {
+		return
+	}
+
+	if err := validateNodeName(request.Name); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -59,8 +78,225 @@ func (h *NodeHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	response := newNodeResponse(node)
+
+	if h.credentials != nil {
+		token, expiresAt, err := h.credentials.IssueBootstrap(r.Context(), node.ID)
+		if err != nil {
+			h.logger.Printf("issuing bootstrap credential failed: %v", err)
+			writeError(w, http.StatusInternalServerError, "internal server error")
+			return
+		}
+		response.BootstrapToken = token
+		expires := expiresAt.UTC().Format(time.RFC3339)
+		response.BootstrapExpiresAt = &expires
+
+		principal := auth.PrincipalFrom(r.Context())
+		h.auditEvent(r, audit.Event{
+			Operation: audit.OpCredentialIssued,
+			Actor:     principal.ID(),
+			ActorType: principal.ActorType(),
+			Resource:  "bootstrap_credential:" + node.ID,
+			RequestID: middleware.RequestIDFrom(r.Context()),
+			Source:    middleware.SourceAddress(r),
+		})
+	}
+	h.auditEvent(r, audit.Event{
+		Operation: audit.OpNodeRegistered,
+		Actor:     auth.PrincipalFrom(r.Context()).ID(),
+		ActorType: auth.PrincipalFrom(r.Context()).ActorType(),
+		Resource:  "node:" + node.ID,
+		RequestID: middleware.RequestIDFrom(r.Context()),
+		Source:    middleware.SourceAddress(r),
+	})
+
 	h.logger.Printf("node registered: id=%s name=%s status=%s", node.ID, node.Name, node.Status)
-	writeJSON(w, http.StatusCreated, newNodeResponse(node))
+	writeJSON(w, http.StatusCreated, response)
+}
+
+// Register handles POST /nodes/{id}/register: the Phase 10 secure
+// registration exchange. A bootstrap credential authenticates the request;
+// the control plane verifies it is active, unused, unexpired and bound to the
+// target node, consumes it, and issues the long-lived agent credential. The
+// agent credential is shown exactly once.
+func (h *NodeHandler) Register(w http.ResponseWriter, r *http.Request) {
+	id, ok := nodeID(w, r)
+	if !ok {
+		return
+	}
+
+	principal := auth.PrincipalFrom(r.Context())
+	if principal == nil || (principal.Type != auth.PrincipalBootstrap && principal.Type != auth.PrincipalAgent) {
+		writeError(w, http.StatusUnauthorized, "authentication failed")
+		return
+	}
+	if principal.NodeID != id {
+		h.auditEvent(r, audit.Event{
+			Operation: audit.OpAuthorizationDenied,
+			Actor:     principal.ID(),
+			ActorType: principal.ActorType(),
+			Resource:  "node:" + id,
+			Result:    audit.ResultDenied,
+			Reason:    "bootstrap credential bound to another node",
+			RequestID: middleware.RequestIDFrom(r.Context()),
+			Source:    middleware.SourceAddress(r),
+		})
+		writeError(w, http.StatusForbidden, "forbidden")
+		return
+	}
+
+	// Optional metadata payload; agents may re-declare their attributes.
+	var request createNodeRequest
+	if r.ContentLength != 0 {
+		if !decodeJSON(w, r, &request) {
+			return
+		}
+	}
+
+	node, err := h.nodes.Get(r.Context(), id)
+	if err != nil {
+		h.writeServiceError(w, err, "registering node")
+		return
+	}
+
+	agentToken, expiresAt, err := h.credentials.RegisterWithBootstrap(r.Context(), middleware.BearerToken(r), id)
+	if err != nil {
+		switch {
+		case errors.Is(err, auth.ErrWrongNode):
+			h.auditEvent(r, audit.Event{
+				Operation: audit.OpAuthorizationDenied,
+				Actor:     principal.ID(),
+				ActorType: principal.ActorType(),
+				Resource:  "node:" + id,
+				Result:    audit.ResultDenied,
+				Reason:    "credential not valid for this node",
+				RequestID: middleware.RequestIDFrom(r.Context()),
+				Source:    middleware.SourceAddress(r),
+			})
+			writeError(w, http.StatusForbidden, "forbidden")
+		case errors.Is(err, auth.ErrUsedCredential):
+			h.auditEvent(r, audit.Event{
+				Operation: audit.OpAuthenticationFailed,
+				Actor:     principal.ID(),
+				ActorType: principal.ActorType(),
+				Result:    audit.ResultFailure,
+				Reason:    "bootstrap credential replay",
+				RequestID: middleware.RequestIDFrom(r.Context()),
+				Source:    middleware.SourceAddress(r),
+			})
+			writeError(w, http.StatusUnauthorized, "authentication failed")
+		case errors.Is(err, auth.ErrExpiredCredential):
+			h.auditEvent(r, audit.Event{
+				Operation: audit.OpAuthenticationFailed,
+				Actor:     principal.ID(),
+				ActorType: principal.ActorType(),
+				Result:    audit.ResultFailure,
+				Reason:    "bootstrap credential expired",
+				RequestID: middleware.RequestIDFrom(r.Context()),
+				Source:    middleware.SourceAddress(r),
+			})
+			writeError(w, http.StatusUnauthorized, "authentication failed")
+		default:
+			h.writeServiceError(w, err, "registering node")
+		}
+		return
+	}
+
+	expires := expiresAt.UTC().Format(time.RFC3339)
+	h.auditEvent(r, audit.Event{
+		Operation: audit.OpNodeRegistered,
+		Actor:     "bootstrap:" + id,
+		ActorType: string(auth.PrincipalBootstrap),
+		Resource:  "node:" + id,
+		RequestID: middleware.RequestIDFrom(r.Context()),
+		Source:    middleware.SourceAddress(r),
+	})
+	h.auditEvent(r, audit.Event{
+		Operation: audit.OpCredentialIssued,
+		Actor:     "bootstrap:" + id,
+		ActorType: string(auth.PrincipalBootstrap),
+		Resource:  "agent_credential:" + id,
+		RequestID: middleware.RequestIDFrom(r.Context()),
+		Source:    middleware.SourceAddress(r),
+	})
+
+	h.logger.Printf("secure registration complete: id=%s name=%s", node.ID, node.Name)
+	writeJSON(w, http.StatusOK, registerResponse{
+		NodeID:              node.ID,
+		Status:              string(node.Status),
+		Credential:          agentToken,
+		CredentialExpiresAt: &expires,
+	})
+}
+
+// RotateCredentials handles POST /nodes/{id}/credentials/rotate. Agents may
+// rotate their own credentials; administrators may rotate any node's.
+// Rotation issues a fresh agent credential and revokes all previous agent
+// credentials for the node.
+func (h *NodeHandler) RotateCredentials(w http.ResponseWriter, r *http.Request) {
+	id, ok := nodeID(w, r)
+	if !ok {
+		return
+	}
+	if _, err := h.nodes.Get(r.Context(), id); err != nil {
+		h.writeServiceError(w, err, "rotating credentials")
+		return
+	}
+
+	token, expiresAt, err := h.credentials.Rotate(r.Context(), id)
+	if err != nil {
+		h.writeServiceError(w, err, "rotating credentials")
+		return
+	}
+
+	principal := auth.PrincipalFrom(r.Context())
+	expires := expiresAt.UTC().Format(time.RFC3339)
+	h.auditEvent(r, audit.Event{
+		Operation: audit.OpCredentialRotated,
+		Actor:     principal.ID(),
+		ActorType: principal.ActorType(),
+		Resource:  "agent_credential:" + id,
+		RequestID: middleware.RequestIDFrom(r.Context()),
+		Source:    middleware.SourceAddress(r),
+	})
+	writeJSON(w, http.StatusOK, registerResponse{
+		NodeID:              id,
+		Credential:          token,
+		CredentialExpiresAt: &expires,
+	})
+}
+
+// RevokeCredentials handles DELETE /nodes/{id}/credentials: the kill switch
+// for a compromised node. Every active bootstrap and agent credential for the
+// node becomes invalid immediately.
+func (h *NodeHandler) RevokeCredentials(w http.ResponseWriter, r *http.Request) {
+	id, ok := nodeID(w, r)
+	if !ok {
+		return
+	}
+	if _, err := h.nodes.Get(r.Context(), id); err != nil {
+		h.writeServiceError(w, err, "revoking credentials")
+		return
+	}
+
+	revoked, err := h.credentials.RevokeNode(r.Context(), id)
+	if err != nil {
+		h.writeServiceError(w, err, "revoking credentials")
+		return
+	}
+
+	principal := auth.PrincipalFrom(r.Context())
+	h.auditEvent(r, audit.Event{
+		Operation: audit.OpCredentialRevoked,
+		Actor:     principal.ID(),
+		ActorType: principal.ActorType(),
+		Resource:  "all_credentials:" + id,
+		RequestID: middleware.RequestIDFrom(r.Context()),
+		Source:    middleware.SourceAddress(r),
+		Reason:    fmt.Sprintf("%d credential(s) revoked", revoked),
+	})
+	h.logger.Printf("credentials revoked: id=%s count=%d", id, revoked)
+	writeJSON(w, http.StatusOK, map[string]any{"status": "revoked", "node_id": id, "revoked": revoked})
 }
 
 // List handles GET /nodes.
@@ -93,17 +329,44 @@ func (h *NodeHandler) Get(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, newNodeResponse(node))
 }
 
-// Delete handles DELETE /nodes/{id}.
+// Delete handles DELETE /nodes/{id}. Deleting a node also revokes every
+// credential issued for it so a removed node can never re-authenticate.
 func (h *NodeHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	id, ok := nodeID(w, r)
 	if !ok {
 		return
 	}
 
+	if h.credentials != nil {
+		if _, err := h.credentials.RevokeNode(r.Context(), id); err != nil {
+			h.writeServiceError(w, err, "revoking node credentials")
+			return
+		}
+	}
+
 	if err := h.nodes.Delete(r.Context(), id); err != nil {
 		h.writeServiceError(w, err, "deleting node")
 		return
 	}
+
+	principal := auth.PrincipalFrom(r.Context())
+	h.auditEvent(r, audit.Event{
+		Operation: audit.OpCredentialRevoked,
+		Actor:     principal.ID(),
+		ActorType: principal.ActorType(),
+		Resource:  "all_credentials:" + id,
+		RequestID: middleware.RequestIDFrom(r.Context()),
+		Source:    middleware.SourceAddress(r),
+		Reason:    "node deleted",
+	})
+	h.auditEvent(r, audit.Event{
+		Operation: audit.OpNodeDeleted,
+		Actor:     principal.ID(),
+		ActorType: principal.ActorType(),
+		Resource:  "node:" + id,
+		RequestID: middleware.RequestIDFrom(r.Context()),
+		Source:    middleware.SourceAddress(r),
+	})
 	h.logger.Printf("node deleted: id=%s", id)
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -153,8 +416,7 @@ func (h *NodeHandler) SetState(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var request setStateRequest
-	if err := decodeJSON(w, r, &request); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+	if !decodeJSON(w, r, &request) {
 		return
 	}
 
@@ -205,8 +467,7 @@ func (h *NodeHandler) SetDesiredState(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var request setDesiredStateRequest
-	if err := decodeJSON(w, r, &request); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+	if !decodeJSON(w, r, &request) {
 		return
 	}
 
@@ -266,6 +527,32 @@ func (h *NodeHandler) writeServiceError(w http.ResponseWriter, err error, action
 	}
 }
 
+// auditEvent records an audit event when auditing is configured. It is a
+// no-op in minimal test setups without an auditor.
+func (h *NodeHandler) auditEvent(r *http.Request, event audit.Event) {
+	if h.auditor != nil {
+		h.auditor.Record(r.Context(), event)
+	}
+}
+
+// validateNodeName enforces a conservative name charset so hostile strings
+// cannot reach logs, metrics labels or Terraform/HCL generation.
+func validateNodeName(name string) error {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return errors.New("name is required")
+	}
+	if len(name) > 63 {
+		return errors.New("name must be at most 63 characters")
+	}
+	for _, r := range name {
+		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-' || r == '_' || r == '.') {
+			return fmt.Errorf("invalid name %q: only letters, digits, '-', '_' and '.' are allowed", name)
+		}
+	}
+	return nil
+}
+
 func nodeID(w http.ResponseWriter, r *http.Request) (string, bool) {
 	id := r.PathValue("id")
 	if _, err := uuid.Parse(id); err != nil {
@@ -275,13 +562,22 @@ func nodeID(w http.ResponseWriter, r *http.Request) (string, bool) {
 	return id, true
 }
 
-func decodeJSON(w http.ResponseWriter, r *http.Request, destination any) error {
+// decodeJSON parses the request body into destination, writing the
+// appropriate error response itself when parsing fails. It returns false when
+// the handler must stop.
+func decodeJSON(w http.ResponseWriter, r *http.Request, destination any) bool {
 	decoder := json.NewDecoder(r.Body)
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(destination); err != nil {
-		return fmt.Errorf("invalid request body: %v", err)
+		var maxBytes *http.MaxBytesError
+		if errors.As(err, &maxBytes) {
+			writeError(w, http.StatusRequestEntityTooLarge, "request body too large")
+			return false
+		}
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid request body: %v", err))
+		return false
 	}
-	return nil
+	return true
 }
 
 func writeJSON(w http.ResponseWriter, status int, value any) {
@@ -351,6 +647,22 @@ type nodeResponse struct {
 	LastHeartbeat     *string `json:"last_heartbeat"`
 	CreatedAt         string  `json:"created_at"`
 	UpdatedAt         string  `json:"updated_at"`
+
+	// BootstrapToken is the single-use registration credential. It is set
+	// only in the POST /nodes response that issued it and is never persisted
+	// in plaintext or returned anywhere else.
+	BootstrapToken string `json:"bootstrap_token,omitempty"`
+	// BootstrapExpiresAt is when the bootstrap credential expires.
+	BootstrapExpiresAt *string `json:"bootstrap_expires_at,omitempty"`
+}
+
+// registerResponse is returned by POST /nodes/{id}/register and the
+// credential rotation endpoint. Credential is shown exactly once.
+type registerResponse struct {
+	NodeID              string  `json:"node_id"`
+	Status              string  `json:"status,omitempty"`
+	Credential          string  `json:"credential"`
+	CredentialExpiresAt *string `json:"credential_expires_at,omitempty"`
 }
 
 func newNodeResponse(node *domain.Node) nodeResponse {

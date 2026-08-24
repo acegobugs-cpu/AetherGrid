@@ -16,6 +16,8 @@ import (
 	"testing"
 	"time"
 
+	"AetherGrid/controlPlane/internal/audit"
+	"AetherGrid/controlPlane/internal/auth"
 	apihandler "AetherGrid/controlPlane/internal/http"
 	"AetherGrid/controlPlane/internal/provisioning"
 	"AetherGrid/controlPlane/internal/reconcile"
@@ -23,6 +25,10 @@ import (
 	"AetherGrid/controlPlane/internal/service"
 	"AetherGrid/controlPlane/migrations"
 )
+
+// Test-only static API key (fake development credential). Declared in
+// integration_test.go and shared across this package's test files.
+const testReconcileAdminKey = "reconcile-admin-key-001"
 
 // reconciliationApp is a control-plane instance with the reconciliation engine
 // running.
@@ -72,7 +78,26 @@ func startReconciliationApp(t *testing.T, cfg reconcile.Config) *reconciliationA
 		logger,
 	)
 
-	router := apihandler.NewRouter(nodeService, heartbeatService, reconciler, commandService, infrastructureService, clusterService, logger)
+	staticKeys, err := auth.NewStaticKeyStore([]string{testReconcileAdminKey + ":admin"})
+	if err != nil {
+		t.Fatalf("building static key store: %v", err)
+	}
+	router := apihandler.NewRouter(
+		apihandler.Services{
+			Nodes:           nodeService,
+			Heartbeats:      heartbeatService,
+			Reconciler:      reconciler,
+			Commands:        commandService,
+			Infrastructures: infrastructureService,
+			Clusters:        clusterService,
+		},
+		apihandler.Security{
+			Credentials: auth.NewService(sqlite.NewCredentialRepository(repo.DB())),
+			StaticKeys:  staticKeys,
+			Auditor:     audit.NewLogger(logger, sqlite.NewAuditRepository(repo.DB())),
+		},
+		logger,
+	)
 	server := httptest.NewServer(router)
 
 	reconciler.Start()
@@ -101,6 +126,7 @@ func (a *reconciliationApp) request(t *testing.T, method, path string, body any)
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
+	req.Header.Set("Authorization", "Bearer "+testReconcileAdminKey)
 
 	resp, err := a.server.Client().Do(req)
 	if err != nil {

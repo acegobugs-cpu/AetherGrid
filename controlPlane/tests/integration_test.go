@@ -16,6 +16,8 @@ import (
 	"testing"
 	"time"
 
+	"AetherGrid/controlPlane/internal/audit"
+	"AetherGrid/controlPlane/internal/auth"
 	"AetherGrid/controlPlane/internal/domain"
 	apihandler "AetherGrid/controlPlane/internal/http"
 	"AetherGrid/controlPlane/internal/provisioning"
@@ -23,6 +25,11 @@ import (
 	"AetherGrid/controlPlane/internal/repository/sqlite"
 	"AetherGrid/controlPlane/internal/service"
 	"AetherGrid/controlPlane/migrations"
+)
+
+// Test-only static API keys (fake development credentials).
+const (
+	testAdminKey = "integration-admin-key-1"
 )
 
 // testReconcileConfig is the engine configuration used by the integration
@@ -105,13 +112,24 @@ func startApp(t *testing.T, dbPath string) *appInstance {
 		&provisioning.Metrics{},
 		logger,
 	)
+	staticKeys, err := auth.NewStaticKeyStore([]string{testAdminKey + ":admin"})
+	if err != nil {
+		t.Fatalf("building static key store: %v", err)
+	}
 	router := apihandler.NewRouter(
-		service.NewNodeService(repo),
-		service.NewHeartbeatService(repo),
-		reconciler,
-		commandService,
-		infrastructureService,
-		clusterService,
+		apihandler.Services{
+			Nodes:           service.NewNodeService(repo),
+			Heartbeats:      service.NewHeartbeatService(repo),
+			Reconciler:      reconciler,
+			Commands:        commandService,
+			Infrastructures: infrastructureService,
+			Clusters:        clusterService,
+		},
+		apihandler.Security{
+			Credentials: auth.NewService(sqlite.NewCredentialRepository(repo.DB())),
+			StaticKeys:  staticKeys,
+			Auditor:     audit.NewLogger(logger, sqlite.NewAuditRepository(repo.DB())),
+		},
 		logger,
 	)
 	server := httptest.NewServer(router)
@@ -126,7 +144,8 @@ func (a *appInstance) stop() {
 	a.repo.Close()
 }
 
-// request performs an HTTP request against the running instance.
+// request performs an authenticated (admin) HTTP request against the running
+// instance.
 func (a *appInstance) request(t *testing.T, method, path string, body any) (*http.Response, map[string]any) {
 	t.Helper()
 
@@ -146,6 +165,7 @@ func (a *appInstance) request(t *testing.T, method, path string, body any) (*htt
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
+	req.Header.Set("Authorization", "Bearer "+testAdminKey)
 
 	resp, err := a.server.Client().Do(req)
 	if err != nil {

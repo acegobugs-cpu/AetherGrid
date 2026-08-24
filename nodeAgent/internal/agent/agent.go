@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -47,6 +48,11 @@ type Agent struct {
 	processedMu sync.Mutex
 	processed   map[string]bool
 
+	// hasCredential records whether a node credential is installed. Without
+	// one the agent cannot authenticate and must not attempt privileged
+	// loops.
+	hasCredential bool
+
 	cancel        context.CancelFunc
 	wg            sync.WaitGroup
 	localListener net.Listener
@@ -79,6 +85,16 @@ func newAgent(cfg config.Config, logger *log.Logger, cpClient client.ControlPlan
 		nodeIP:        detectIP(cfg.ControlPlaneURL),
 		kubernetes:    k8sService,
 		k8sCollector:  kubernetes.NewStateCollector(k8sService),
+	}
+
+	// Phase 10: if the agent already holds a persisted credential it is
+	// attached to every control-plane request. The HTTP client supports
+	// SetToken; static fakes in tests ignore it via the interface.
+	if setter, ok := cpClient.(interface{ SetToken(string) }); ok {
+		if token, err := agent.identityStore.LoadCredential(); err == nil && token != "" {
+			setter.SetToken(token)
+			agent.hasCredential = true
+		}
 	}
 
 	agent.commands.Register("GET_STATUS", command.NewGetStatusHandler(agent.stateSnapshot))
@@ -144,57 +160,117 @@ func (a *Agent) LocalAddr() string {
 	return a.localListener.Addr().String()
 }
 
-// setupIdentity determines the agent's identity: from configuration, from the
-// persisted store, or by registering with the control plane.
+// setupIdentity establishes the agent's authenticated identity (Phase 10).
+//
+// Resolution order:
+//  1. A persisted node credential + node ID: verified against the control
+//     plane. A rejected credential (401) fails startup - revoked agents must
+//     not silently acquire new identities.
+//  2. A bootstrap token from configuration: exchanged for a long-lived node
+//     credential via the secure registration endpoint.
+//  3. Explicitly enabled self-registration against a development control
+//     plane with open registration. Never attempted otherwise.
 func (a *Agent) setupIdentity(ctx context.Context) error {
-	if a.cfg.NodeID != "" {
-		a.setNodeID(a.cfg.NodeID)
-		a.logger.Printf("identity loaded from configuration: node_id=%s", a.cfg.NodeID)
-		return nil
+	storedID := a.cfg.NodeID
+	if storedID == "" {
+		if id, err := a.identityStore.Load(); err == nil {
+			storedID = id
+		}
 	}
 
-	stored, err := a.identityStore.Load()
 	switch {
-	case errors.Is(err, identity.ErrNotFound):
-		a.logger.Printf("no local identity found, registering with control plane")
-		return a.register(ctx)
-	case err != nil:
-		a.logger.Printf("identity file corrupt or unreadable (%v), re-registering", err)
-		return a.register(ctx)
-	}
+	case a.hasCredential && storedID != "":
+		a.setNodeID(storedID)
+		a.logger.Printf("identity loaded: node_id=%s", storedID)
 
-	a.setNodeID(stored)
-	a.logger.Printf("identity loaded: node_id=%s", stored)
+		info, err := a.cpClient.GetNode(ctx, storedID)
+		switch {
+		case err == nil:
+			a.logger.Printf("authenticated to existing node: node_id=%s name=%s status=%s desired=%s",
+				storedID, info.Name, info.Status, info.DesiredStatus)
+			return nil
+		case client.IsUnauthorized(err):
+			// Fail closed: the credential exists but is no longer trusted.
+			return fmt.Errorf("node credential rejected by control plane (node_id=%s); the credential may have been rotated or revoked", storedID)
+		case client.IsNotFound(err):
+			// The node record was deleted; its credentials were revoked with
+			// it. Re-adopting an identity requires new provisioning.
+			return fmt.Errorf("node %s no longer exists on the control plane; provision this agent again", storedID)
+		default:
+			a.logger.Printf("control plane unreachable at startup (node_id=%s): %v; will authenticate on next heartbeat", storedID, err)
+			return nil
+		}
 
-	info, err := a.cpClient.GetNode(ctx, stored)
-	switch {
-	case err == nil:
-		a.logger.Printf("reconnected to existing node: node_id=%s name=%s status=%s desired=%s",
-			stored, info.Name, info.Status, info.DesiredStatus)
-		return nil
-	case client.IsNotFound(err):
-		a.logger.Printf("identity unknown to control plane (node_id=%s), re-registering", stored)
+	case a.cfg.BootstrapToken != "" && storedID != "":
+		a.setNodeID(storedID)
+		return a.exchangeBootstrapCredential(ctx, storedID, a.cfg.BootstrapToken)
+
+	case a.cfg.AllowSelfRegistration:
+		a.logger.Printf("self-registration enabled by configuration; registering with control plane")
 		return a.register(ctx)
+
 	default:
-		a.logger.Printf("control plane unreachable at startup (node_id=%s): %v; will verify on next heartbeat", stored, err)
-		return nil
+		return fmt.Errorf(
+			"no node credential available; provide AETHER_BOOTSTRAP_TOKEN and NODE_ID from provisioning, or restore %s",
+			filepath.Join(a.cfg.DataDir, identity.CredentialFileName))
 	}
 }
 
-// register obtains a node identity from the control plane and persists it. It
-// retries with exponential backoff so a temporarily unavailable control plane
-// does not kill a first-time agent.
+// exchangeBootstrapCredential swaps a single-use bootstrap token for the
+// long-lived node credential and persists both identities.
+func (a *Agent) exchangeBootstrapCredential(ctx context.Context, nodeID, bootstrapToken string) error {
+	result, err := a.cpClient.ExchangeBootstrap(ctx, nodeID, bootstrapToken, a.registerInput())
+	if err != nil {
+		if client.IsUnauthorized(err) {
+			return fmt.Errorf("bootstrap credential rejected during registration (node_id=%s): %w", nodeID, err)
+		}
+		return fmt.Errorf("registration exchange failed: %w", err)
+	}
+	if result.Credential == "" {
+		return fmt.Errorf("control plane did not issue a node credential")
+	}
+	if result.NodeID != "" && result.NodeID != nodeID {
+		return fmt.Errorf("control plane returned mismatched node id %q", result.NodeID)
+	}
+
+	if setter, ok := a.cpClient.(interface{ SetToken(string) }); ok {
+		setter.SetToken(result.Credential)
+	}
+	a.hasCredential = true
+
+	if err := a.identityStore.SaveCredential(result.Credential); err != nil {
+		return fmt.Errorf("persisting node credential: %w", err)
+	}
+	if err := a.identityStore.Save(nodeID); err != nil {
+		return fmt.Errorf("persisting identity: %w", err)
+	}
+	a.logger.Printf("secure registration complete: node_id=%s status=%s", nodeID, result.Status)
+	return nil
+}
+
+// register obtains a node identity from the control plane and persists it,
+// including the issued credential. It retries with exponential backoff so a
+// temporarily unavailable control plane does not kill a first-time agent.
+// This path only runs when self-registration was explicitly enabled.
 func (a *Agent) register(ctx context.Context) error {
 	attempt := 0
 	for {
-		result, err := a.cpClient.Register(ctx, client.RegisterInput{
-			Name:              a.cfg.NodeName,
-			Location:          a.cfg.NodeLocation,
-			IPAddress:         a.nodeIP,
-			KubernetesEnabled: a.cfg.KubernetesEnabled,
-			WireGuardEnabled:  false,
-		})
+		result, err := a.cpClient.Register(ctx, a.registerInput())
 		if err == nil {
+			if result.Credential != "" {
+				// Open-registration control planes hand back a bootstrap
+				// token that must be exchanged immediately.
+				a.setNodeID(result.NodeID)
+				if err := a.identityStore.Save(result.NodeID); err != nil {
+					return fmt.Errorf("persisting identity: %w", err)
+				}
+				if err := a.exchangeBootstrapCredential(ctx, result.NodeID, result.Credential); err != nil {
+					return err
+				}
+				return nil
+			}
+			// Legacy response without credential support (should not happen
+			// with Phase 10 control planes).
 			a.setNodeID(result.NodeID)
 			if err := a.identityStore.Save(result.NodeID); err != nil {
 				return fmt.Errorf("persisting identity: %w", err)
@@ -220,19 +296,33 @@ func (a *Agent) register(ctx context.Context) error {
 	}
 }
 
-// reRegister obtains a fresh identity after the control plane reports the
-// current one as unknown. The old identity is replaced.
-func (a *Agent) reRegister(ctx context.Context) {
-	previous := a.currentNodeID()
-	a.logger.Printf("re-registering: previous node_id=%s", previous)
-	if err := a.register(ctx); err != nil {
-		a.logger.Printf("re-registration failed: %v", err)
+func (a *Agent) registerInput() client.RegisterInput {
+	return client.RegisterInput{
+		Name:              a.cfg.NodeName,
+		Location:          a.cfg.NodeLocation,
+		IPAddress:         a.nodeIP,
+		KubernetesEnabled: a.cfg.KubernetesEnabled,
+		WireGuardEnabled:  false,
 	}
 }
 
-// heartbeatLoop periodically sends heartbeats. On failure it enters an
-// exponential-backoff retry cycle that returns to the normal schedule as soon
-// as the control plane is reachable again.
+// handleIdentityLoss fails closed when the control plane reports the agent's
+// credential as untrusted or the node as unknown. A compromised or revoked
+// identity must never be silently replaced by a new one; re-joining requires
+// fresh provisioning by an operator.
+func (a *Agent) handleIdentityLoss(ctx context.Context, reason string) {
+	a.logger.Printf("CRITICAL: identity no longer trusted (%s); stopping agent loops (node_id=%s). Re-provision this node to resume.",
+		reason, a.currentNodeID())
+	a.setStatus(state.StatusDegraded)
+	if a.cancel != nil {
+		a.cancel()
+	}
+}
+
+// heartbeatLoop periodically sends heartbeats. On transient failure it enters
+// an exponential-backoff retry cycle that returns to the normal schedule as
+// soon as the control plane is reachable again. Authentication and existence
+// failures are not retryable: they stop the agent.
 func (a *Agent) heartbeatLoop(ctx context.Context) {
 	defer a.wg.Done()
 
@@ -260,11 +350,12 @@ func (a *Agent) heartbeatLoop(ctx context.Context) {
 			a.setStatus(state.StatusReady)
 			a.setLastSync(time.Now().UTC())
 			timer.Reset(a.cfg.HeartbeatInterval)
+		case client.IsUnauthorized(err):
+			a.handleIdentityLoss(ctx, "credential rejected")
+			return
 		case client.IsNotFound(err):
-			a.logger.Printf("node identity unknown to control plane (node_id=%s), re-registering", a.currentNodeID())
-			a.reRegister(ctx)
-			connected = false
-			timer.Reset(a.cfg.HeartbeatInterval)
+			a.handleIdentityLoss(ctx, "node unknown to control plane")
+			return
 		default:
 			failures++
 			connected = false

@@ -8,7 +8,10 @@ import (
 	"strings"
 	"time"
 
+	"AetherGrid/controlPlane/internal/audit"
+	"AetherGrid/controlPlane/internal/auth"
 	"AetherGrid/controlPlane/internal/domain"
+	"AetherGrid/controlPlane/internal/http/middleware"
 	"AetherGrid/controlPlane/internal/service"
 
 	"github.com/google/uuid"
@@ -19,14 +22,16 @@ import (
 // cancellation, and provisioning metrics.
 type InfrastructureHandler struct {
 	infrastructures *service.InfrastructureService
+	auditor         *audit.Logger
 	logger          *log.Logger
 }
 
 // NewInfrastructureHandler constructs an InfrastructureHandler with the given
 // service.
-func NewInfrastructureHandler(infrastructures *service.InfrastructureService, logger *log.Logger) *InfrastructureHandler {
+func NewInfrastructureHandler(infrastructures *service.InfrastructureService, auditor *audit.Logger, logger *log.Logger) *InfrastructureHandler {
 	return &InfrastructureHandler{
 		infrastructures: infrastructures,
+		auditor:         auditor,
 		logger:          logger,
 	}
 }
@@ -34,8 +39,7 @@ func NewInfrastructureHandler(infrastructures *service.InfrastructureService, lo
 // Create handles POST /infrastructure.
 func (h *InfrastructureHandler) Create(w http.ResponseWriter, r *http.Request) {
 	var request createInfrastructureRequest
-	if err := decodeJSON(w, r, &request); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+	if !decodeJSON(w, r, &request) {
 		return
 	}
 
@@ -109,14 +113,40 @@ func (h *InfrastructureHandler) StartPlan(w http.ResponseWriter, r *http.Request
 	h.startOperation(w, r, domain.OperationPlan)
 }
 
-// StartApply handles POST /infrastructure/{id}/apply.
+// StartDestroy handles POST /infrastructure/{id}/destroy.
+func (h *InfrastructureHandler) StartDestroy(w http.ResponseWriter, r *http.Request) {
+	if id, ok := infrastructureID(w, r); ok {
+		h.auditOperation(r, audit.OpInfrastructureDestroyed, "infrastructure:"+id)
+	}
+	h.startOperation(w, r, domain.OperationDestroy)
+}
+
+// StartApply handles POST /infrastructure/{id}/apply with an audit event for
+// infrastructure provisioning.
 func (h *InfrastructureHandler) StartApply(w http.ResponseWriter, r *http.Request) {
+	if id, ok := infrastructureID(w, r); ok {
+		h.auditOperation(r, audit.OpInfrastructureCreated, "infrastructure:"+id)
+	}
 	h.startOperation(w, r, domain.OperationApply)
 }
 
-// StartDestroy handles POST /infrastructure/{id}/destroy.
-func (h *InfrastructureHandler) StartDestroy(w http.ResponseWriter, r *http.Request) {
-	h.startOperation(w, r, domain.OperationDestroy)
+// auditOperation records who launched a provisioning/destroying operation.
+func (h *InfrastructureHandler) auditOperation(r *http.Request, operation, resource string) {
+	principal := auth.PrincipalFrom(r.Context())
+	event := audit.Event{
+		Operation: operation,
+		Actor:     principal.ID(),
+		ActorType: principal.ActorType(),
+		Resource:  resource,
+		RequestID: middleware.RequestIDFrom(r.Context()),
+		Source:    middleware.SourceAddress(r),
+	}
+	if h.auditor != nil {
+		h.auditor.Record(r.Context(), event)
+		return
+	}
+	h.logger.Printf("AUDIT operation=%s actor=%s actor_type=%s resource=%q result=%s request_id=%s source=%s",
+		event.Operation, event.Actor, event.ActorType, event.Resource, audit.ResultSuccess, event.RequestID, event.Source)
 }
 
 // StartBootstrap handles POST /infrastructure/{id}/bootstrap.

@@ -33,19 +33,23 @@ type commandReport struct {
 }
 
 // mockControlPlane is an in-memory implementation of the control plane HTTP
-// API. It can be stopped and restarted on the same address to simulate a
-// control plane restart.
+// API implementing the Phase 10 secure registration protocol. It can be
+// stopped and restarted on the same address to simulate a control plane
+// restart.
 type mockControlPlane struct {
-	mu           sync.Mutex
-	nodes        map[string]mockNode
-	nodeCounter  int
-	heartbeats   map[string]int
-	stateReports []stateReport
-	desired      map[string]string
-	pending      map[string][]pendingCommand
-	results      []commandReport
-	addr         string
-	server       *httptest.Server
+	mu              sync.Mutex
+	nodes           map[string]mockNode
+	nodeCounter     int
+	heartbeats      map[string]int
+	stateReports    []stateReport
+	desired         map[string]string
+	pending         map[string][]pendingCommand
+	results         []commandReport
+	credentials     map[string]string // node id -> agent credential
+	bootstrap       map[string]string // node id -> unused bootstrap token
+	addr            string
+	server          *httptest.Server
+	unauthenticated []string // log of authenticated requests lacking valid credentials
 }
 
 type mockNode struct {
@@ -100,10 +104,12 @@ type commandResponse struct {
 // startMockControlPlane creates a mock control plane and returns it.
 func startMockControlPlane() *mockControlPlane {
 	mock := &mockControlPlane{
-		nodes:      make(map[string]mockNode),
-		heartbeats: make(map[string]int),
-		desired:    make(map[string]string),
-		pending:    make(map[string][]pendingCommand),
+		nodes:       make(map[string]mockNode),
+		heartbeats:  make(map[string]int),
+		desired:     make(map[string]string),
+		pending:     make(map[string][]pendingCommand),
+		credentials: make(map[string]string),
+		bootstrap:   make(map[string]string),
 	}
 	mock.start()
 	return mock
@@ -202,21 +208,64 @@ func (m *mockControlPlane) route(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case r.Method == http.MethodPost && r.URL.Path == "/nodes":
 		m.handleRegister(w, r)
+	case r.Method == http.MethodPost && pathSegments(r.URL.Path) == 3 && pathOf(r.URL.Path, 1) == "nodes" && pathOf(r.URL.Path, 3) == "register":
+		m.handleRegisterExchange(w, r)
 	case r.Method == http.MethodGet && pathSegments(r.URL.Path) == 2 && pathOf(r.URL.Path, 1) == "nodes":
+		if !m.authenticate(w, r) {
+			return
+		}
 		m.handleGetNode(w, r)
 	case r.Method == http.MethodPost && pathSegments(r.URL.Path) == 3 && pathOf(r.URL.Path, 1) == "nodes" && pathOf(r.URL.Path, 3) == "heartbeat":
+		if !m.authenticate(w, r) {
+			return
+		}
 		m.handleHeartbeat(w, r)
 	case r.Method == http.MethodPut && pathSegments(r.URL.Path) == 3 && pathOf(r.URL.Path, 1) == "nodes" && pathOf(r.URL.Path, 3) == "state":
+		if !m.authenticate(w, r) {
+			return
+		}
 		m.handleReportState(w, r)
 	case r.Method == http.MethodGet && pathSegments(r.URL.Path) == 3 && pathOf(r.URL.Path, 1) == "nodes" && pathOf(r.URL.Path, 3) == "desired-state":
+		if !m.authenticate(w, r) {
+			return
+		}
 		m.handleDesiredState(w, r)
 	case r.Method == http.MethodGet && pathSegments(r.URL.Path) == 3 && pathOf(r.URL.Path, 1) == "nodes" && pathOf(r.URL.Path, 3) == "commands":
+		if !m.authenticate(w, r) {
+			return
+		}
 		m.handleListCommands(w, r)
 	case r.Method == http.MethodPost && pathSegments(r.URL.Path) == 5 && pathOf(r.URL.Path, 1) == "nodes" && pathOf(r.URL.Path, 3) == "commands" && pathOf(r.URL.Path, 5) == "result":
+		if !m.authenticate(w, r) {
+			return
+		}
 		m.handleCommandResult(w, r)
 	default:
 		http.NotFound(w, r)
 	}
+}
+
+// authenticate enforces the Phase 10 bearer credential on node-scoped
+// endpoints. It writes a 401 response and returns false when the credential
+// is missing or unknown.
+func (m *mockControlPlane) authenticate(w http.ResponseWriter, r *http.Request) bool {
+	const scheme = "Bearer "
+	header := r.Header.Get("Authorization")
+	token := ""
+	if len(header) > len(scheme) && header[:len(scheme)] == scheme {
+		token = header[len(scheme):]
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, credential := range m.credentials {
+		if token != "" && credential == token {
+			return true
+		}
+	}
+	m.unauthenticated = append(m.unauthenticated, r.Method+" "+r.URL.Path)
+	writeError(w, http.StatusUnauthorized, "authentication failed")
+	return false
 }
 
 func (m *mockControlPlane) handleRegister(w http.ResponseWriter, r *http.Request) {
@@ -237,9 +286,50 @@ func (m *mockControlPlane) handleRegister(w http.ResponseWriter, r *http.Request
 	id := fmt.Sprintf("node-%d", m.nodeCounter)
 	m.nodes[id] = mockNode{ID: id, Name: input.Name, Status: "PROVISIONING", Location: input.Location, IPAddress: input.IPAddress}
 	m.desired[id] = "READY"
+	bootstrapToken := fmt.Sprintf("agr_bootstrap_%s", id)
+	m.bootstrap[id] = bootstrapToken
 	m.mu.Unlock()
 
-	writeJSON(w, http.StatusCreated, nodeResponse{ID: id, Name: input.Name, Status: "PROVISIONING", Location: input.Location, IPAddress: input.IPAddress, DesiredStatus: "READY"})
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"id":              id,
+		"name":            input.Name,
+		"status":          "PROVISIONING",
+		"location":        input.Location,
+		"ip_address":      input.IPAddress,
+		"desired_status":  "READY",
+		"bootstrap_token": bootstrapToken,
+	})
+}
+
+// handleRegisterExchange implements POST /nodes/{id}/register: the bootstrap
+// token is consumed and the agent credential issued.
+func (m *mockControlPlane) handleRegisterExchange(w http.ResponseWriter, r *http.Request) {
+	nodeID := pathOf(r.URL.Path, 2)
+
+	const scheme = "Bearer "
+	header := r.Header.Get("Authorization")
+	token := ""
+	if len(header) > len(scheme) && header[:len(scheme)] == scheme {
+		token = header[len(scheme):]
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	storedToken, pending := m.bootstrap[nodeID]
+	node, known := m.nodes[nodeID]
+	if !known || !pending || storedToken != token || token == "" {
+		writeError(w, http.StatusUnauthorized, "authentication failed")
+		return
+	}
+	delete(m.bootstrap, nodeID)
+
+	credential := fmt.Sprintf("agr_agent_credential_for_%s", nodeID)
+	m.credentials[nodeID] = credential
+	writeJSON(w, http.StatusOK, map[string]string{
+		"node_id":    node.ID,
+		"status":     node.Status,
+		"credential": credential,
+	})
 }
 
 func (m *mockControlPlane) handleGetNode(w http.ResponseWriter, r *http.Request) {
@@ -420,21 +510,24 @@ func splitPath(path string) []string {
 }
 
 // integrationConfig builds a configuration pointing at the mock control plane.
+// Self-registration is enabled because the mock simulates a development
+// control plane with open registration.
 func integrationConfig(t *testing.T, mock *mockControlPlane) config.Config {
 	t.Helper()
 	return config.Config{
-		ControlPlaneURL:     mock.url(),
-		NodeName:            "edge-01",
-		NodeLocation:        "addis-01",
-		DataDir:             t.TempDir(),
-		HeartbeatInterval:   20 * time.Millisecond,
-		StateReportInterval: 30 * time.Millisecond,
-		CommandPollInterval: 20 * time.Millisecond,
-		CommandTimeout:      2 * time.Second,
-		InitialBackoff:      5 * time.Millisecond,
-		MaxBackoff:          50 * time.Millisecond,
-		ListenAddr:          "127.0.0.1:0",
-		Version:             "integration-test",
+		ControlPlaneURL:       mock.url(),
+		NodeName:              "edge-01",
+		NodeLocation:          "addis-01",
+		DataDir:               t.TempDir(),
+		HeartbeatInterval:     20 * time.Millisecond,
+		StateReportInterval:   30 * time.Millisecond,
+		CommandPollInterval:   20 * time.Millisecond,
+		CommandTimeout:        2 * time.Second,
+		InitialBackoff:        5 * time.Millisecond,
+		MaxBackoff:            50 * time.Millisecond,
+		ListenAddr:            "127.0.0.1:0",
+		Version:               "integration-test",
+		AllowSelfRegistration: true,
 	}
 }
 

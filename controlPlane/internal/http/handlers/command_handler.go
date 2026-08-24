@@ -35,8 +35,7 @@ func (h *CommandHandler) Create(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var request createCommandRequest
-	if err := decodeJSON(w, r, &request); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+	if !decodeJSON(w, r, &request) {
 		return
 	}
 
@@ -90,8 +89,7 @@ func (h *CommandHandler) ReportResult(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var request reportCommandResultRequest
-	if err := decodeJSON(w, r, &request); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+	if !decodeJSON(w, r, &request) {
 		return
 	}
 

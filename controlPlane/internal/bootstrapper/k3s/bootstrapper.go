@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"strings"
@@ -26,6 +27,13 @@ import (
 type SSHExecutor interface {
 	RunCommand(ctx context.Context, host string, port int, user string, privateKeyPath string, command string) (string, error)
 	CopyFile(ctx context.Context, host string, port int, user string, privateKeyPath string, localPath, remotePath string) error
+}
+
+// stdinExecutor is implemented by executors that can stream data to a
+// command's standard input. Phase 10 uses it so secrets (the cluster join
+// token) never appear in remote process argv or shell command strings.
+type stdinExecutor interface {
+	RunCommandStdin(ctx context.Context, host string, port int, user string, privateKeyPath string, command string, stdin io.Reader) (string, error)
 }
 
 // k8sClientFactory creates a Kubernetes clientset from a kubeconfig path or
@@ -350,13 +358,21 @@ func (b *K3sBootstrapper) JoinWorker(ctx context.Context, clusterID, nodeID stri
 		}, nil
 	}
 
-	// Build the k3s agent join command. The token is passed via environment
-	// variable, not as a command-line argument, to avoid leaking it in process
-	// listings.
-	joinCmd := b.buildAgentJoinCommand(joinInfo)
+	// Phase 10: deliver the join token through the SSH stdin channel into a
+	// root-only file, then start the agent with the token read inside the
+	// remote root shell. The token never appears in any process argv or
+	// remote shell command string.
+	if err := b.deliverJoinToken(ctx, endpoint, port, user, keyPath, joinInfo.Token); err != nil {
+		return &bootstrapper.BootstrapOperationResult{
+			Step:      string(domain.K8sBootstrapStepJoinWorkers),
+			Succeeded: false,
+			Error:     fmt.Sprintf("delivering join token securely: %v", err),
+		}, nil
+	}
 
-	output, err := b.runSSHCommand(ctx, endpoint, port, user, keyPath, joinCmd, b.workerJoinTimeout)
+	output, err := b.runSSHCommand(ctx, endpoint, port, user, keyPath, b.buildAgentJoinCommand(), b.workerJoinTimeout)
 	if err != nil {
+		b.removeJoinToken(ctx, endpoint, port, user, keyPath)
 		errMsg := fmt.Sprintf("worker join failed: %v (output: %s)", err, truncate(output, 500))
 		if b.metrics != nil {
 			b.metrics.FailedCount++
@@ -367,6 +383,9 @@ func (b *K3sBootstrapper) JoinWorker(ctx context.Context, clusterID, nodeID stri
 			Error:     errMsg,
 		}, nil
 	}
+
+	// The staged token is no longer needed once the agent has joined.
+	b.removeJoinToken(ctx, endpoint, port, user, keyPath)
 
 	b.logger.Printf("k3s: worker %s joined successfully", nodeID)
 	return &bootstrapper.BootstrapOperationResult{
@@ -634,11 +653,44 @@ func (b *K3sBootstrapper) buildServerStartCommand(node *domain.Node) string {
 	return "sudo systemctl enable k3s && sudo systemctl start k3s"
 }
 
-// buildAgentJoinCommand constructs the k3s agent join command using the
-// secure join info. The token is passed via environment variable to avoid
-// leaking it in process listings.
-func (b *K3sBootstrapper) buildAgentJoinCommand(joinInfo *bootstrapper.ClusterJoinInfo) string {
-	return fmt.Sprintf("sudo K3S_TOKEN=%s K3S_URL=%s k3s agent", joinInfo.Token, joinInfo.Endpoint)
+// joinTokenFile is where the join token is staged on a worker node before
+// the agent starts. It lives under /run (tmpfs), is written through stdin
+// with mode 0600, and is removed after use.
+const joinTokenFile = "/run/aethergrid-k3s-join-token"
+
+// deliverJoinToken streams the cluster join token to a worker node over the
+// SSH stdin channel into a root-only file. The token never transits a shell
+// command string or process argument list.
+func (b *K3sBootstrapper) deliverJoinToken(ctx context.Context, host string, port int, user string, keyPath string, token string) error {
+	executor, ok := b.ssh.(stdinExecutor)
+	if !ok {
+		return errors.New("SSH executor does not support secure stdin transport; refusing to expose the join token in argv")
+	}
+	command := fmt.Sprintf("umask 077 && cat > %s && chmod 600 %s", joinTokenFile, joinTokenFile)
+	if _, err := executor.RunCommandStdin(ctx, host, port, user, keyPath, command, strings.NewReader(token+"\n")); err != nil {
+		return fmt.Errorf("staging join token on remote host: %w", err)
+	}
+	return nil
+}
+
+// removeJoinToken deletes the staged join token after the agent has joined.
+func (b *K3sBootstrapper) removeJoinToken(ctx context.Context, host string, port int, user string, keyPath string) {
+	cleanup := fmt.Sprintf("sh -c 'rm -f %s'", joinTokenFile)
+	if _, err := b.runSSHCommand(ctx, host, port, user, keyPath, cleanup, 15*time.Second); err != nil {
+		b.logger.Printf("k3s: removing staged join token failed on %s: %v", host, err)
+	}
+}
+
+// buildAgentJoinCommand constructs the k3s agent start command for a worker
+// whose join token has already been staged at joinTokenFile by
+// deliverJoinToken. The command reads the token inside the remote root shell
+// and exports it via the environment, so it is never visible in process
+// listings.
+func (b *K3sBootstrapper) buildAgentJoinCommand() string {
+	return fmt.Sprintf(
+		"sudo sh -c 'K3S_TOKEN=$(cat %s); export K3S_TOKEN; exec k3s agent'",
+		joinTokenFile,
+	)
 }
 
 // resolveK3sVersion determines the k3s version to install. It checks the
@@ -756,8 +808,8 @@ func (b *K3sBootstrapper) verifyServerNodeReady(ctx context.Context, host string
 	return err
 }
 
-// retrieveJoinInfo securely retrieves the cluster join token from the k3s server.
-// The token is never logged.
+// retrieveJoinInfo securely retrieves the cluster join token and the server
+// certificate authority from the k3s server. Neither is ever logged.
 func (b *K3sBootstrapper) retrieveJoinInfo(ctx context.Context, host string, port int, user string, keyPath string) (*bootstrapper.ClusterJoinInfo, error) {
 	// Read the token file - never log the token contents
 	tokenCmd := "sudo cat /var/lib/rancher/k3s/server/token"
@@ -771,6 +823,14 @@ func (b *K3sBootstrapper) retrieveJoinInfo(ctx context.Context, host string, por
 		return nil, errors.New("cluster token is empty")
 	}
 
+	// Phase 10: fetch the cluster CA so kubeconfigs validate the API server
+	// certificate instead of skipping TLS verification.
+	caCmd := "sudo cat /var/lib/rancher/k3s/server/tls/server-ca.crt"
+	caCertificate, err := b.runSSHCommand(ctx, host, port, user, keyPath, caCmd, 30*time.Second)
+	if err != nil || strings.TrimSpace(caCertificate) == "" {
+		return nil, fmt.Errorf("retrieving cluster CA certificate: %w", err)
+	}
+
 	// Compute hash for logging/audit
 	tokenHash := sha256.Sum256([]byte(token))
 	hashStr := hex.EncodeToString(tokenHash[:])
@@ -778,24 +838,28 @@ func (b *K3sBootstrapper) retrieveJoinInfo(ctx context.Context, host string, por
 	b.logger.Printf("k3s: retrieved join info (token_hash=%s, endpoint=%s:6443)", hashStr, host)
 
 	return &bootstrapper.ClusterJoinInfo{
-		Endpoint:  fmt.Sprintf("https://%s:%d", host, b.defaultK3sPort),
-		Token:     token,
-		TokenHash: hashStr,
+		Endpoint:      fmt.Sprintf("https://%s:%d", host, b.defaultK3sPort),
+		Token:         token,
+		TokenHash:     hashStr,
+		CACertificate: strings.TrimSpace(caCertificate),
 	}, nil
 }
 
-// buildKubeconfig constructs a kubeconfig for connecting to the Kubernetes API.
-// The kubeconfig is sanitized - client certificates and private keys are not
-// exposed through the API or logs.
+// buildKubeconfig constructs a kubeconfig for connecting to the Kubernetes
+// API. The API server certificate is validated against the cluster CA that
+// was retrieved with the join info; TLS verification is never disabled.
+// The kubeconfig embeds the join token and is therefore treated as a secret:
+// it is not logged and not exposed through APIs.
 func (b *K3sBootstrapper) buildKubeconfig(apiEndpoint string) (string, error) {
-	// We use a token-based kubeconfig instead of client certificate kubeconfig
-	// to avoid exposing private keys. The API endpoint is used for the server
-	// field.
+	if b.joinInfo == nil || b.joinInfo.CACertificate == "" {
+		return "", errors.New("cluster CA certificate unavailable; refusing to build an unverified kubeconfig")
+	}
+
 	config := &clientcmdapi.Config{
 		Clusters: map[string]*clientcmdapi.Cluster{
 			"default": {
-				Server:                apiEndpoint,
-				InsecureSkipTLSVerify: true, // TODO: Phase 10 - proper TLS
+				Server:                   apiEndpoint,
+				CertificateAuthorityData: []byte(b.joinInfo.CACertificate),
 			},
 		},
 		Contexts: map[string]*clientcmdapi.Context{

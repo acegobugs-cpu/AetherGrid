@@ -2,24 +2,31 @@ package handlers
 
 import (
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"strconv"
 	"strings"
 
+	"AetherGrid/controlPlane/internal/audit"
+	"AetherGrid/controlPlane/internal/auth"
 	"AetherGrid/controlPlane/internal/domain"
+	"AetherGrid/controlPlane/internal/http/middleware"
 	"AetherGrid/controlPlane/internal/service"
+
+	"github.com/google/uuid"
 )
 
 // ReconciliationHandler exposes the reconciliation endpoints over HTTP.
 type ReconciliationHandler struct {
 	reconciler *service.ReconciliationService
+	auditor    *audit.Logger
 	logger     *log.Logger
 }
 
 // NewReconciliationHandler constructs a ReconciliationHandler.
-func NewReconciliationHandler(reconciler *service.ReconciliationService, logger *log.Logger) *ReconciliationHandler {
-	return &ReconciliationHandler{reconciler: reconciler, logger: logger}
+func NewReconciliationHandler(reconciler *service.ReconciliationService, auditor *audit.Logger, logger *log.Logger) *ReconciliationHandler {
+	return &ReconciliationHandler{reconciler: reconciler, auditor: auditor, logger: logger}
 }
 
 // Reconcile handles POST /nodes/{id}/reconcile. It runs one full reconciliation
@@ -29,6 +36,7 @@ func (h *ReconciliationHandler) Reconcile(w http.ResponseWriter, r *http.Request
 	if !ok {
 		return
 	}
+	h.auditTrigger(r, "node:"+id)
 
 	result, err := h.reconciler.Reconcile(r.Context(), id)
 	if err != nil {
@@ -139,6 +147,7 @@ func (h *ReconciliationHandler) ClusterRecovery(w http.ResponseWriter, r *http.R
 // locks and confirmation thresholds as automatic reconciliation.
 func (h *ReconciliationHandler) ClusterReconcile(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
+	h.auditTrigger(r, "cluster:"+id)
 	results, err := h.reconciler.ReconcileCluster(r.Context(), id)
 	if err != nil {
 		h.writeServiceError(w, err, "cluster reconcile")
@@ -158,11 +167,35 @@ func (h *ReconciliationHandler) ResetNodeRecovery(w http.ResponseWriter, r *http
 		writeError(w, http.StatusBadRequest, "node_id is required")
 		return
 	}
-	if err := h.reconciler.ResetNodeRecovery(r.Context(), body.NodeID); err != nil {
+	if _, err := uuid.Parse(strings.TrimSpace(body.NodeID)); err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid node id %q", body.NodeID))
+		return
+	}
+	h.auditTrigger(r, "recovery:"+strings.TrimSpace(body.NodeID))
+	if err := h.reconciler.ResetNodeRecovery(r.Context(), strings.TrimSpace(body.NodeID)); err != nil {
 		h.writeServiceError(w, err, "recovery reset")
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "reset", "node_id": body.NodeID})
+}
+
+// auditTrigger records who triggered a reconciliation or recovery operation.
+func (h *ReconciliationHandler) auditTrigger(r *http.Request, resource string) {
+	principal := auth.PrincipalFrom(r.Context())
+	if h.auditor != nil {
+		h.auditor.Record(r.Context(), audit.Event{
+			Operation: audit.OpReconcileTriggered,
+			Actor:     principal.ID(),
+			ActorType: principal.ActorType(),
+			Resource:  resource,
+			RequestID: middleware.RequestIDFrom(r.Context()),
+			Source:    middleware.SourceAddress(r),
+		})
+		return
+	}
+	h.logger.Printf("AUDIT operation=%s actor=%s actor_type=%s resource=%q result=%s request_id=%s source=%s",
+		audit.OpReconcileTriggered, principal.ID(), principal.ActorType(), resource,
+		audit.ResultSuccess, middleware.RequestIDFrom(r.Context()), middleware.SourceAddress(r))
 }
 
 // writeServiceError maps service/repository errors to consistent HTTP

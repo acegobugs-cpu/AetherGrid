@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"runtime/debug"
 	"time"
+
+	"AetherGrid/controlPlane/internal/auth"
 )
 
 // statusRecorder captures the response status code written by a handler so it
@@ -21,13 +23,21 @@ func (r *statusRecorder) WriteHeader(status int) {
 	r.ResponseWriter.WriteHeader(status)
 }
 
-// Log logs the method, path, response status and duration of every request.
+// Log logs the method, path, response status, duration, correlation ID and
+// authenticated actor of every request. The actor is a principal ID (role or
+// node identity), never a credential.
 func Log(logger *log.Logger, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		recorder := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
 		next.ServeHTTP(recorder, r)
-		logger.Printf("%s %s -> %d (%s)", r.Method, r.URL.Path, recorder.status, time.Since(start))
+
+		actor := "anonymous"
+		if principal := auth.PrincipalFrom(r.Context()); principal != nil {
+			actor = principal.ID()
+		}
+		logger.Printf("%s %s -> %d (%s) actor=%s request_id=%s",
+			r.Method, r.URL.Path, recorder.status, time.Since(start), actor, RequestIDFrom(r.Context()))
 	})
 }
 
